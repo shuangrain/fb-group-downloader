@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  fb-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    image: fb-group-downloader:latest
+    container_name: fb-group-downloader
+    restart: unless-stopped
+    # 以主機目前使用者的 UID / GID 執行
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - TZ=Asia/Taipei
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # 掛載設定檔
+      - ./config.yaml:/app/config.yaml:ro
+      # 掛載 Facebook Session 認證檔案
+      - ./session.json:/app/session.json:ro
+      # 掛載下載目錄與 SQLite 資料庫
+      - ./downloads:/app/downloads
+      # 掛載日誌輸出目錄
+      - ./logs:/app/logs
+    # 預設執行常駐排程守護程式，亦可透過指令覆蓋（例如：docker compose run fb-downloader sync）
+    command: ["daemon"]

@@ -1,0 +1,105 @@
+# ==========================================
+# Facebook 認證憑證與機密檔案（嚴禁上傳 Git）
+# ==========================================
+session.json
+*.session.json
+cookies.json
+*cookie*.json
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# 本地設定檔（保留 config.example.yaml 作為範本）
+# ==========================================
+config.yaml
+
+# ==========================================
+# Agent 與 Skills 設定檔
+# ==========================================
+.agents/
+skills-lock.json
+
+# ==========================================
+# 下載內容、資料庫與日誌輸出
+# ==========================================
+downloads/
+logs/
+*.log
+*.log.*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ==========================================
+# Python 編譯快取與虛擬環境
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虛擬環境
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# 測試與程式碼風格分析快取
+# ==========================================
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# ==========================================
+# IDE 與編輯器設定
+# ==========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ==========================================
+# 作業系統暫存檔
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

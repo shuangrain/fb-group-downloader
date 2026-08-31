@@ -1,0 +1,48 @@
+# Facebook 社團定期下載器設定檔範例
+
+# 檔案儲存目錄
+storage_dir: "./downloads"
+
+# Facebook 登入 Session / Cookies 儲存路徑
+session_file: "./session.json"
+
+# 爬蟲執行時是否使用無頭模式 (建議正式排程時設為 true)
+headless: true
+
+# 請求逾時時間（秒）
+browser_timeout_sec: 60
+
+# 模擬人類滾動頁面隨機延遲區間 (秒)
+scroll_delay_range:
+  - 1.5
+  - 3.5
+
+# 自訂 User-Agent
+user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+# 定期排程設定
+schedule:
+  enabled: true
+  interval_minutes: 60 # 每 60 分鐘執行一次同步
+  # cron: "0 */2 * * *" # 可選：若設定 cron 則會優先採用，此範例為每 2 小時整點執行
+
+# 日誌輸出與輪替 (Log Rotation) 設定
+logging:
+  enabled: true
+  file_path: "./logs/fb_downloader.log" # 日誌輸出檔案路徑
+  level: "INFO" # 記錄等級: DEBUG, INFO, WARNING, ERROR
+  rotation_mode: "size" # 輪替機制: 'size' (依檔案大小) 或 'daily' (每日午夜輪替)
+  max_bytes: 10485760 # 依大小輪替時，單檔上限（10MB = 10 * 1024 * 1024 bytes）
+  backup_count: 5 # 保留歷史備份日誌檔案數量
+
+# 要監控與下載的社團清單
+groups:
+  - group_id: "123456789012345" # 社團數字 ID 或短網址名稱
+    name: "範例測試社團"
+    download_images: true # 是否下載貼文與相簿圖片
+    download_videos: true # 是否下載貼文影片
+    download_files: true # 是否下載社團附件檔案 (PDF, DOCX, ZIP 等)
+    scan_feed: true # 是否掃描動態貼文
+    scan_files_tab: true # 是否掃描社團「檔案」分頁
+    scan_media_tab: false # 是否獨立掃描社團「多媒體」分頁
+    max_posts_per_scan: 30 # 每次同步最多向下掃描貼文數量
