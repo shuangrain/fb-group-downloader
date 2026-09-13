@@ -1,6 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from typing import TYPE_CHECKING
+
 from rich.console import Console
 from rich.logging import RichHandler
 

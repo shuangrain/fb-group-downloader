@@ -7,6 +7,7 @@ from playwright.async_api import Page
 from fb_group_downloader.config import GroupConfig
 from fb_group_downloader.downloader.models import AlbumBundle, MediaItem, MediaType
 from fb_group_downloader.scraper.base import BaseScraper
+from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -90,11 +91,44 @@ class GroupMediaScraper:
             for _ in range(3):
                 photos_data = await page.evaluate(
                     """() => {
+                        const getBestImgSrc = (img) => {
+                            let bestUrl = img.src || "";
+                            let maxWidth = 0;
+
+                            if (img.srcset) {
+                                const parts = img.srcset.split(',');
+                                for (const p of parts) {
+                                    const trimmed = p.trim();
+                                    const spaceIdx = trimmed.lastIndexOf(' ');
+                                    if (spaceIdx > 0) {
+                                        const url = trimmed.substring(0, spaceIdx).trim();
+                                        const desc = trimmed.substring(spaceIdx + 1).trim();
+                                        let width = 0;
+                                        if (desc.endsWith('w')) {
+                                            width = parseInt(desc.replace('w', ''), 10);
+                                        } else if (desc.endsWith('x')) {
+                                            width = parseFloat(desc.replace('x', '')) * 1000;
+                                        }
+                                        if (width > maxWidth && url.startsWith('http')) {
+                                            maxWidth = width;
+                                            bestUrl = url;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!maxWidth && img.currentSrc && img.currentSrc.startsWith('http')) {
+                                bestUrl = img.currentSrc;
+                            }
+
+                            return bestUrl;
+                        };
+
                         const imgs = Array.from(document.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
                         return imgs.map(img => {
                             const parent = img.closest('a');
                             return {
-                                src: img.src,
+                                src: getBestImgSrc(img),
                                 photoUrl: parent ? parent.href : ""
                             };
                         });
@@ -108,6 +142,14 @@ class GroupMediaScraper:
                         continue
                     photo_urls_seen.add(src)
                     photo_id = self._extract_photo_id(photo_page_url) or f"img_{len(media_items) + 1}"
+
+                    # 若網址仍為縮圖標記且有相片頁面連結，透過 Photo Viewer 解析大圖
+                    if FacebookPhotoExtractor.is_thumbnail_url(src) and photo_page_url:
+                        high_res = await FacebookPhotoExtractor.resolve_high_res_photo_url(
+                            page, photo_page_url, fallback_url=src
+                        )
+                        if high_res:
+                            src = high_res
 
                     media_items.append(
                         MediaItem(

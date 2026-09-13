@@ -7,6 +7,7 @@ from playwright.async_api import Page, Response
 from fb_group_downloader.config import GroupConfig
 from fb_group_downloader.downloader.models import MediaItem, MediaType, PostBundle
 from fb_group_downloader.scraper.base import BaseScraper
+from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.scraper.video_extractor import FacebookVideoExtractor
 from fb_group_downloader.utils.logger import get_logger
 
@@ -21,9 +22,10 @@ class GroupFeedScraper:
         self.seen_post_ids: set[str] = set()
         self.seen_media_urls: set[str] = set()
 
-        # 儲存網路攔截到的影片串流直鏈：video_id / post_id -> mp4_url
+        # 儲存網路攔截到的影片與高解析度照片直鏈
         self.intercepted_video_streams: dict[str, str] = {}
         self.captured_cdn_mp4s: list[str] = []
+        self.intercepted_photo_urls: dict[str, str] = {}
 
     def _extract_post_id(self, url: str) -> str | None:
         """從貼文 URL 中擷取 Post ID"""
@@ -71,19 +73,20 @@ class GroupFeedScraper:
         return None
 
     async def _handle_response(self, response: Response) -> None:
-        """監聽網路回應，攔截 GraphQL 與 CDN 中的高解析度影片直鏈"""
+        """監聽網路回應，攔截 GraphQL 與 CDN 中的高解析度影片與原尺寸照片直鏈"""
         url = response.url
         try:
-            # 攔截 direct CDN mp4 請求
+            # 1. 攔截 direct CDN mp4 請求
             if ".mp4" in url and "fbcdn.net" in url:
                 if url not in self.captured_cdn_mp4s:
                     self.captured_cdn_mp4s.append(url)
                     logger.debug(f"攔截到 CDN 影片直鏈：{url[:80]}...")
 
-            # 攔截 GraphQL 回傳的影片 JSON 結構
+            # 2. 攔截 GraphQL 回傳的 JSON 結構
             if "graphql" in url and response.status == 200:
                 try:
                     text = await response.text()
+                    # 擷取影片直鏈
                     matches = re.findall(r'"playable_url(?:_quality_hd)?":\s*"([^"]+)"', text)
                     ids = re.findall(r'"video_id":\s*"(\d+)"', text) or re.findall(r'"id":\s*"(\d+)"', text)
                     for m_url in matches:
@@ -93,6 +96,17 @@ class GroupFeedScraper:
                                 self.intercepted_video_streams[v_id] = clean_url
                         if clean_url not in self.captured_cdn_mp4s:
                             self.captured_cdn_mp4s.append(clean_url)
+
+                    # 擷取高解析度照片直鏈 (viewer_image 或 image uri)
+                    photo_matches = re.findall(r'"viewer_image":\s*\{\s*"uri":\s*"([^"]+)"', text) + re.findall(
+                        r'"image":\s*\{\s*"uri":\s*"(https:[^"]+fbcdn\.net[^"]+)"', text
+                    )
+                    for p_uri in photo_matches:
+                        clean_p_uri = p_uri.replace("\\/", "/")
+                        p_fbid = self._extract_photo_id(clean_p_uri)
+                        if p_fbid and not FacebookPhotoExtractor.is_thumbnail_url(clean_p_uri):
+                            self.intercepted_photo_urls[p_fbid] = clean_p_uri
+
                 except Exception:
                     pass
         except Exception:
@@ -120,6 +134,39 @@ class GroupFeedScraper:
         while len(self.seen_post_ids) < max_posts:
             posts_data = await page.evaluate(
                 """() => {
+                    const getBestImgSrc = (img) => {
+                        let bestUrl = img.src || "";
+                        let maxWidth = 0;
+
+                        if (img.srcset) {
+                            const parts = img.srcset.split(',');
+                            for (const p of parts) {
+                                const trimmed = p.trim();
+                                const spaceIdx = trimmed.lastIndexOf(' ');
+                                if (spaceIdx > 0) {
+                                    const url = trimmed.substring(0, spaceIdx).trim();
+                                    const desc = trimmed.substring(spaceIdx + 1).trim();
+                                    let width = 0;
+                                    if (desc.endsWith('w')) {
+                                        width = parseInt(desc.replace('w', ''), 10);
+                                    } else if (desc.endsWith('x')) {
+                                        width = parseFloat(desc.replace('x', '')) * 1000;
+                                    }
+                                    if (width > maxWidth && url.startsWith('http')) {
+                                        maxWidth = width;
+                                        bestUrl = url;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!maxWidth && img.currentSrc && img.currentSrc.startsWith('http')) {
+                            bestUrl = img.currentSrc;
+                        }
+
+                        return bestUrl;
+                    };
+
                     const articles = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"], div[data-pagelet^="FeedUnit"]'));
                     const results = [];
 
@@ -136,7 +183,7 @@ class GroupFeedScraper:
                         const images = [];
                         const imgElems = Array.from(article.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
                         for (const img of imgElems) {
-                            const src = img.src;
+                            const src = getBestImgSrc(img);
                             if (img.naturalWidth > 150 || img.naturalHeight > 150 || (!img.naturalWidth && !src.includes('emoji.php') && !src.includes('rsrc.php'))) {
                                 const parentLink = img.closest('a');
                                 const photoViewerUrl = parentLink ? parentLink.href : "";
@@ -211,12 +258,24 @@ class GroupFeedScraper:
                 post_time = datetime.utcnow().isoformat()
                 media_items: list[MediaItem] = []
 
-                # 收集圖片
+                # 收集圖片（高解析度原圖優選）
                 if self.config.download_images:
                     for idx, img_info in enumerate(p_data.get("images", [])):
                         img_src = img_info.get("src")
                         photo_url = img_info.get("photoUrl", "")
                         media_id = self._extract_photo_id(photo_url) or f"{post_id}_img_{idx + 1}"
+
+                        # 1. 優先比對 GraphQL 攔截到的高解析度相片
+                        if media_id in self.intercepted_photo_urls:
+                            img_src = self.intercepted_photo_urls[media_id]
+                        # 2. 若網址帶有縮圖標籤（如 /s526x296/）且有相片頁面連結，透過 Photo Viewer 解析大圖
+                        elif FacebookPhotoExtractor.is_thumbnail_url(img_src) and photo_url:
+                            high_res = await FacebookPhotoExtractor.resolve_high_res_photo_url(
+                                page, photo_url, fallback_url=img_src
+                            )
+                            if high_res:
+                                img_src = high_res
+                                self.intercepted_photo_urls[media_id] = high_res
 
                         if img_src and img_src not in self.seen_media_urls:
                             self.seen_media_urls.add(img_src)
