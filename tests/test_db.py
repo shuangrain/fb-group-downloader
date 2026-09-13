@@ -54,3 +54,44 @@ def test_database_crud_and_deduplication(tmp_path: Path):
     recent = db.get_recent_downloads(limit=10)
     assert len(recent) == 1
     assert recent[0].post_author == "Test User"
+
+
+def test_database_low_res_and_corrupt_invalidation(tmp_path: Path):
+    db_file = tmp_path / "test_invalidation.db"
+    db = Database(db_file)
+
+    # 1. 建立縮圖記錄
+    temp_thumb = tmp_path / "thumb.jpg"
+    temp_thumb.write_bytes(b"x" * 2000)
+
+    thumb_rec = DownloadRecord(
+        group_id="group1",
+        media_id="thumb_1",
+        media_type=MediaType.IMAGE,
+        original_url="https://scontent.xx.fbcdn.net/v/t39/photo.jpg?ctp=s590x590",
+        local_filepath=str(temp_thumb),
+        file_size=2000,
+    )
+    db.add_record(thumb_rec)
+
+    # 查詢時應判定為未下載 (False)，並刪除檔案與記錄
+    assert not db.is_downloaded(group_id="group1", media_id="thumb_1")
+    assert not temp_thumb.exists()
+
+    # 2. 建立損壞分片影片記錄 (1.5KB)
+    temp_vid = tmp_path / "corrupt.mp4"
+    temp_vid.write_bytes(b"x" * 1522)
+
+    vid_rec = DownloadRecord(
+        group_id="group1",
+        media_id="vid_1",
+        media_type=MediaType.VIDEO,
+        original_url="https://scontent.xx.fbcdn.net/v/t2/vid.mp4",
+        local_filepath=str(temp_vid),
+        file_size=1522,
+    )
+    db.add_record(vid_rec)
+
+    # 查詢時應判定為未下載 (False)，並刪除檔案與記錄
+    assert not db.is_downloaded(group_id="group1", media_id="vid_1")
+    assert not temp_vid.exists()

@@ -1,4 +1,7 @@
+import base64
+import json
 import re
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from playwright.async_api import Page
 
@@ -11,6 +14,55 @@ class FacebookVideoExtractor:
     """
     專門用來解析 Facebook 私密社團與貼文中的直鏈高畫質影片 (Direct MP4 CDN Streams)
     """
+
+    @staticmethod
+    def strip_byte_range_params(url: str) -> str:
+        """移除 Facebook CDN 網址中的 bytestart 與 byteend 參數以取得完整 progressive 影片串流"""
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url)
+            q_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+            filtered = [(k, v) for k, v in q_pairs if k not in ("bytestart", "byteend")]
+            return urlunparse(parsed._replace(query=urlencode(filtered)))
+        except Exception:
+            cleaned = re.sub(r"[?&]bytestart=\d+", "", url)
+            cleaned = re.sub(r"[?&]byteend=\d+", "", cleaned)
+            if "?" not in cleaned and "&" in cleaned:
+                cleaned = cleaned.replace("&", "?", 1)
+            return cleaned
+
+    @staticmethod
+    def extract_video_id_from_url(url: str) -> str | None:
+        """從影片網址擷取 Video ID，包含從 efg base64 參數解析"""
+        if not url:
+            return None
+        patterns = [
+            r"/videos/[^/]+/(\d+)",
+            r"/videos/(\d+)",
+            r"[?&]v=(\d+)",
+            r"story_fbid=(\d+)",
+            r"video_id=(\d+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, url)
+            if m:
+                return m.group(1)
+
+        try:
+            parsed = urlparse(url)
+            qs = parse_qsl(parsed.query)
+            for k, v in qs:
+                if k == "efg":
+                    padded = v + "=" * (-len(v) % 4)
+                    dec = base64.b64decode(padded).decode("utf-8", errors="ignore")
+                    data = json.loads(dec)
+                    if "video_id" in data:
+                        return str(data["video_id"])
+        except Exception:
+            pass
+
+        return None
 
     @staticmethod
     def _clean_stream_url(raw_url: str) -> str:
@@ -47,41 +99,51 @@ class FacebookVideoExtractor:
             matches = re.findall(pat, html_content)
             for m in matches:
                 clean = cls._clean_stream_url(m)
-                if clean and "fbcdn.net" in clean and ("mp4" in clean or "video" in clean or "bytestart" in clean):
-                    return clean
-                if clean and clean.startswith("http") and not clean.startswith("blob:"):
-                    return clean
+                if clean:
+                    clean = cls.strip_byte_range_params(clean)
+                    if "fbcdn.net" in clean and ("mp4" in clean or "video" in clean or "bytestart" in clean):
+                        return clean
+                    if clean.startswith("http") and not clean.startswith("blob:"):
+                        return clean
 
         return None
 
     @classmethod
-    async def resolve_video_url(cls, page: Page, video_page_url: str, timeout_ms: int = 5000) -> str | None:
+    async def resolve_video_streams(
+        cls, page: Page, video_page_url: str, timeout_ms: int = 5000
+    ) -> tuple[str | None, str | None]:
         """
-        在 Playwright 已登入的 session 瀏覽器中開啟影片貼文網址，攔截並提取真實的 .mp4 串流直鏈
+        在 Playwright 已登入的 session 瀏覽器中開啟影片貼文網址，
+        攔截並提取真實的 .mp4 視訊與音訊 CDN 直鏈（已自動移除 bytestart/byteend 分段標頭以取得完整檔案）
+        回傳 (video_stream_url, audio_stream_url)
         """
         if ".mp4" in video_page_url and "fbcdn.net" in video_page_url:
-            return video_page_url
+            clean_url = cls.strip_byte_range_params(video_page_url)
+            return clean_url, None
 
-        captured_streams: list[str] = []
+        captured_videos: list[str] = []
+        captured_audios: list[str] = []
 
         def on_response(response):
             r_url = response.url
             if ".mp4" in r_url and "fbcdn.net" in r_url:
-                if r_url not in captured_streams:
-                    captured_streams.append(r_url)
+                clean_url = cls.strip_byte_range_params(r_url)
+                if "audio" in r_url or "heaac" in r_url:
+                    if clean_url not in captured_audios:
+                        captured_audios.append(clean_url)
+                else:
+                    if clean_url not in captured_videos:
+                        captured_videos.append(clean_url)
 
-        # 暫時註冊監聽器
         page.on("response", on_response)
         logger.debug(f"正在嘗試透過瀏覽器解析影片直鏈：{video_page_url[:80]}...")
 
         try:
-            # 建立新頁面或前往影片網址
             v_page = await page.context.new_page()
             v_page.on("response", on_response)
 
             try:
                 await v_page.goto(video_page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-                # 稍等 1 秒讓內部 GraphQL 載入
                 await v_page.wait_for_timeout(1500)
 
                 # 嘗試從 DOM 點擊播放以觸發影片串流
@@ -93,16 +155,18 @@ class FacebookVideoExtractor:
                     pass
 
                 # 1. 優先檢查網路攔截到的串流
-                if captured_streams:
-                    logger.info(f"✓ 成功攔截到影片 CDN 直鏈：{captured_streams[0][:80]}...")
-                    return captured_streams[0]
+                if captured_videos:
+                    video_url = captured_videos[0]
+                    audio_url = captured_audios[0] if captured_audios else None
+                    logger.info(f"✓ 成功攔截到影片 CDN 直鏈：{video_url[:80]}...")
+                    return video_url, audio_url
 
                 # 2. 檢查頁面 HTML 中的 JSON 標籤
                 html = await v_page.content()
                 extracted = cls.extract_from_html(html)
                 if extracted:
                     logger.info(f"✓ 成功從頁面原始碼解析影片直鏈：{extracted[:80]}...")
-                    return extracted
+                    return extracted, None
 
             finally:
                 await v_page.close()
@@ -110,4 +174,10 @@ class FacebookVideoExtractor:
         except Exception as e:
             logger.debug(f"瀏覽器解析影片失敗：{e}")
 
-        return None
+        return None, None
+
+    @classmethod
+    async def resolve_video_url(cls, page: Page, video_page_url: str, timeout_ms: int = 5000) -> str | None:
+        """向後相容的 resolve_video_url"""
+        video_url, _ = await cls.resolve_video_streams(page, video_page_url, timeout_ms)
+        return video_url

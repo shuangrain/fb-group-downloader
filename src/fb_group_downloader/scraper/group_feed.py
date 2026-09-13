@@ -61,17 +61,7 @@ class GroupFeedScraper:
 
     def _extract_video_id(self, url: str) -> str | None:
         """從影片網址擷取 Video ID"""
-        patterns = [
-            r"/videos/[^/]+/(\d+)",
-            r"/videos/(\d+)",
-            r"v=(\d+)",
-            r"story_fbid=(\d+)",
-        ]
-        for pat in patterns:
-            m = re.search(pat, url)
-            if m:
-                return m.group(1)
-        return None
+        return FacebookVideoExtractor.extract_video_id_from_url(url)
 
     async def _handle_response(self, response: Response) -> None:
         """監聽網路回應，攔截 GraphQL 與 CDN 中的高解析度影片（視訊+音訊）與原尺寸照片直鏈"""
@@ -79,9 +69,7 @@ class GroupFeedScraper:
         try:
             # 1. 攔截 direct CDN mp4 請求，剝離 bytestart/byteend 分段標頭取得完整檔案
             if ".mp4" in url and "fbcdn.net" in url:
-                clean_stream_url = re.sub(r"&?bytestart=\d+&byteend=\d+", "", url)
-                clean_stream_url = re.sub(r"&?bytestart=\d+", "", clean_stream_url)
-                clean_stream_url = re.sub(r"&?byteend=\d+", "", clean_stream_url)
+                clean_stream_url = FacebookVideoExtractor.strip_byte_range_params(url)
 
                 m_vid = self._extract_video_id(url)
                 if "audio" in url or "heaac" in url:
@@ -103,9 +91,7 @@ class GroupFeedScraper:
                     ids = re.findall(r'"video_id":\s*"(\d+)"', text) or re.findall(r'"id":\s*"(\d+)"', text)
                     for m_url in matches:
                         clean_url = m_url.replace("\\/", "/")
-                        clean_url = re.sub(r"&?bytestart=\d+&byteend=\d+", "", clean_url)
-                        clean_url = re.sub(r"&?bytestart=\d+", "", clean_url)
-                        clean_url = re.sub(r"&?byteend=\d+", "", clean_url)
+                        clean_url = FacebookVideoExtractor.strip_byte_range_params(clean_url)
                         if ids:
                             for v_id in ids:
                                 self.intercepted_video_streams[v_id] = clean_url
@@ -350,13 +336,22 @@ class GroupFeedScraper:
                         vid_id = self._extract_video_id(vid_url) or post_id
 
                         direct_stream_url = self.intercepted_video_streams.get(vid_id)
+                        audio_stream_url = self.intercepted_audio_streams.get(vid_id)
+
                         if not direct_stream_url and vid_url and not vid_url.endswith(".mp4"):
-                            direct_stream_url = await FacebookVideoExtractor.resolve_video_url(page, vid_url)
-                            if direct_stream_url:
-                                self.intercepted_video_streams[vid_id] = direct_stream_url
+                            resolved_v, resolved_a = await FacebookVideoExtractor.resolve_video_streams(page, vid_url)
+                            if resolved_v:
+                                direct_stream_url = resolved_v
+                                self.intercepted_video_streams[vid_id] = resolved_v
+                            if resolved_a:
+                                audio_stream_url = resolved_a
+                                self.intercepted_audio_streams[vid_id] = resolved_a
 
                         final_vid_url = direct_stream_url or vid_url
-                        audio_stream_url = self.intercepted_audio_streams.get(vid_id)
+                        if final_vid_url:
+                            final_vid_url = FacebookVideoExtractor.strip_byte_range_params(final_vid_url)
+                        if audio_stream_url:
+                            audio_stream_url = FacebookVideoExtractor.strip_byte_range_params(audio_stream_url)
 
                         if final_vid_url and final_vid_url not in self.seen_media_urls:
                             self.seen_media_urls.add(final_vid_url)

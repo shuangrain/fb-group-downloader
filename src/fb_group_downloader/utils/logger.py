@@ -1,16 +1,50 @@
 import logging
+from datetime import datetime
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.text import Text
 
 if TYPE_CHECKING:
     from fb_group_downloader.config import LogConfig
 
-console = Console()
+console = Console(soft_wrap=True)
 
 _logger: logging.Logger | None = None
+
+
+class UnboundedRichHandler(RichHandler):
+    """
+    自訂 RichHandler：移除終端機寬度限制（soft_wrap=True），
+    避免在 Docker 或非 TTY 環境下預設被 80 字元強制換行折疊。
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            message_renderable = self.render_message(record, message)
+            level = self.get_level_text(record)
+            time_format = getattr(self._log_render, "time_format", "[%x %X]")
+            log_time = datetime.fromtimestamp(record.created).strftime(time_format)
+
+            line = Text()
+            if getattr(self._log_render, "show_time", True):
+                line.append(f"{log_time} ", style="log.time")
+            if getattr(self._log_render, "show_level", True):
+                line.append(level)
+                line.append(" " * max(1, 10 - len(level.plain)))
+            line.append(message_renderable if isinstance(message_renderable, Text) else Text(str(message_renderable)))
+
+            self.console.print(line, soft_wrap=True)
+            if self.rich_tracebacks and record.exc_info and record.exc_info != (None, None, None):
+                from rich.traceback import Traceback
+
+                tb = Traceback.from_exception(*record.exc_info)
+                self.console.print(tb)
+        except Exception:
+            self.handleError(record)
 
 
 def setup_logger(log_config: "LogConfig | None" = None, debug: bool = False) -> logging.Logger:
@@ -21,8 +55,8 @@ def setup_logger(log_config: "LogConfig | None" = None, debug: bool = False) -> 
     logger.setLevel(level)
     logger.handlers.clear()
 
-    # Rich Console Handler
-    rich_handler = RichHandler(
+    # Rich Console Handler (無長度限制)
+    rich_handler = UnboundedRichHandler(
         console=console,
         show_time=True,
         show_path=False,

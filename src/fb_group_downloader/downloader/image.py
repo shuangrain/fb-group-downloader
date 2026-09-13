@@ -69,12 +69,18 @@ class ImageDownloader:
                 media_tag = self._sanitize_filename(item.media_id) if item.media_id else sha256_hash[:8]
                 filename = f"photo_{index:02d}_{media_tag}{ext}"
                 file_path = output_dir / filename
+                old_size = file_path.stat().st_size if file_path.exists() else 0
 
                 # 寫入檔案
                 with open(file_path, "wb") as f:
                     f.write(content)
 
                 file_size = len(content)
+                if old_size > 0 and old_size < file_size:
+                    logger.warning(
+                        f"[畫質升級/修復] 以高解析度原圖取代舊縮圖：{filename} "
+                        f"({old_size / 1024:.1f} KB -> {file_size / 1024:.1f} KB)"
+                    )
                 logger.info(f"✓ 圖片下載完成：{filename} ({file_size / 1024:.1f} KB)")
 
                 return DownloadRecord(

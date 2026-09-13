@@ -10,6 +10,7 @@ from pathlib import Path
 import yt_dlp
 
 from fb_group_downloader.downloader.models import DownloadRecord, MediaItem, MediaType
+from fb_group_downloader.scraper.video_extractor import FacebookVideoExtractor
 from fb_group_downloader.utils.http import create_async_client
 from fb_group_downloader.utils.logger import get_logger
 
@@ -81,7 +82,8 @@ class VideoDownloader:
     async def _download_stream_to_file(
         self, url: str, output_file: Path, cookies: dict | None = None, headers: dict | None = None
     ) -> bool:
-        """串流下載單個 URL 到指定檔案"""
+        """串流下載單個 URL 到指定檔案，自動剝離 bytestart/byteend 以取得完整檔案"""
+        clean_url = FacebookVideoExtractor.strip_byte_range_params(url)
         req_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://www.facebook.com/",
@@ -93,9 +95,9 @@ class VideoDownloader:
             async with create_async_client(
                 cookies=cookies, headers=req_headers, timeout=self.timeout, follow_redirects=True
             ) as client:
-                async with client.stream("GET", url) as resp:
+                async with client.stream("GET", clean_url) as resp:
                     if resp.status_code not in (200, 206):
-                        logger.warning(f"串流下載失敗 HTTP {resp.status_code}：{url[:80]}...")
+                        logger.warning(f"串流下載失敗 HTTP {resp.status_code}：{clean_url[:80]}...")
                         return False
                     with open(output_file, "wb") as f:
                         async for chunk in resp.aiter_bytes(chunk_size=65536):
@@ -114,14 +116,16 @@ class VideoDownloader:
     ) -> bool:
         """直接透過 HTTP 下載 CDN 串流，若具備獨立音訊軌且環境有 ffmpeg 則自動合併音畫"""
         ffmpeg_bin = shutil.which("ffmpeg")
+        clean_source_url = FacebookVideoExtractor.strip_byte_range_params(item.source_url)
+        clean_audio_url = FacebookVideoExtractor.strip_byte_range_params(item.audio_url) if item.audio_url else None
 
         # 情況 A：若存在獨立音訊軌且系統支援 ffmpeg，分別下載視訊與音訊後進行無損封裝合併
-        if item.audio_url and ffmpeg_bin:
+        if clean_audio_url and ffmpeg_bin:
             temp_v = output_file.with_suffix(".temp_v.mp4")
             temp_a = output_file.with_suffix(".temp_a.mp4")
             try:
-                v_ok = await self._download_stream_to_file(item.source_url, temp_v, cookies, headers)
-                a_ok = await self._download_stream_to_file(item.audio_url, temp_a, cookies, headers)
+                v_ok = await self._download_stream_to_file(clean_source_url, temp_v, cookies, headers)
+                a_ok = await self._download_stream_to_file(clean_audio_url, temp_a, cookies, headers)
 
                 if v_ok and a_ok and temp_v.exists() and temp_v.stat().st_size >= self.MIN_VALID_VIDEO_BYTES:
                     # 使用 ffmpeg 進行 -c copy 快速無損音畫封裝
@@ -153,7 +157,7 @@ class VideoDownloader:
                 temp_a.unlink(missing_ok=True)
 
         # 情況 B：直接下載完整視訊軌
-        ok = await self._download_stream_to_file(item.source_url, output_file, cookies, headers)
+        ok = await self._download_stream_to_file(clean_source_url, output_file, cookies, headers)
         if not ok or not output_file.exists() or output_file.stat().st_size < self.MIN_VALID_VIDEO_BYTES:
             size = output_file.stat().st_size if output_file.exists() else 0
             logger.warning(f"串流檔案過小 ({size} bytes)，判定為非完整影片或無效分片。")
@@ -210,6 +214,12 @@ class VideoDownloader:
         media_tag = self._sanitize_filename(item.media_id) if item.media_id else f"{index:02d}"
         filename = f"video_{index:02d}_{media_tag}.mp4"
         file_path = output_dir / filename
+        old_size = file_path.stat().st_size if file_path.exists() else 0
+
+        # 確保網址已剝離 bytestart 與 byteend 參數
+        item.source_url = FacebookVideoExtractor.strip_byte_range_params(item.source_url)
+        if item.audio_url:
+            item.audio_url = FacebookVideoExtractor.strip_byte_range_params(item.audio_url)
 
         success = False
 
@@ -266,6 +276,11 @@ class VideoDownloader:
         sha256_hash = hasher.hexdigest()
 
         file_size = file_path.stat().st_size
+        if old_size > 0 and old_size < file_size:
+            logger.warning(
+                f"[畫質升級/修復] 以完整高畫質影片取代舊檔案：{file_path.name} "
+                f"({old_size / 1024:.1f} KB -> {file_size / (1024 * 1024):.2f} MB)"
+            )
         logger.info(f"✓ 影片下載完成：{file_path.name} ({file_size / (1024 * 1024):.2f} MB)")
 
         return DownloadRecord(

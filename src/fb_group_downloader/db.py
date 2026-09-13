@@ -118,6 +118,12 @@ class Database:
                         file_size < 50 * 1024
                         or (local_path and Path(local_path).exists() and Path(local_path).stat().st_size < 50 * 1024)
                     ):
+                        actual_size = (
+                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
+                        )
+                        logger.warning(
+                            f"[畫質升級/修復] 偵測到歷史殘留之無效/過小影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or media_id}"
+                        )
                         if local_path and Path(local_path).exists():
                             Path(local_path).unlink(missing_ok=True)
                         cursor.execute(
@@ -133,6 +139,12 @@ class Database:
                             and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
                         )
                     ):
+                        actual_size = (
+                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
+                        )
+                        logger.warning(
+                            f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or orig_url}"
+                        )
                         if local_path and Path(local_path).exists():
                             Path(local_path).unlink(missing_ok=True)
                         cursor.execute(
@@ -144,10 +156,47 @@ class Database:
 
             if original_url:
                 cursor.execute(
-                    "SELECT 1 FROM downloads WHERE group_id = ? AND original_url = ? LIMIT 1",
+                    "SELECT id, file_size, media_type, local_filepath FROM downloads WHERE group_id = ? AND original_url = ? LIMIT 1",
                     (group_id, original_url),
                 )
-                if cursor.fetchone():
+                row = cursor.fetchone()
+                if row:
+                    rec_id, file_size, media_type, local_path = row
+                    if media_type == "video" and (
+                        file_size < 50 * 1024
+                        or (local_path and Path(local_path).exists() and Path(local_path).stat().st_size < 50 * 1024)
+                    ):
+                        actual_size = (
+                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
+                        )
+                        logger.warning(
+                            f"[畫質升級/修復] 偵測到歷史殘留之無效/過小影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or original_url}"
+                        )
+                        if local_path and Path(local_path).exists():
+                            Path(local_path).unlink(missing_ok=True)
+                        cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+                        conn.commit()
+                        return False
+                    if media_type == "image" and (
+                        FacebookPhotoExtractor.is_thumbnail_url(original_url)
+                        or (
+                            file_size < 100 * 1024
+                            and (
+                                "ctp=s" in original_url or "/s526x296/" in original_url or "/p720x720/" in original_url
+                            )
+                        )
+                    ):
+                        actual_size = (
+                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
+                        )
+                        logger.warning(
+                            f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or original_url}"
+                        )
+                        if local_path and Path(local_path).exists():
+                            Path(local_path).unlink(missing_ok=True)
+                        cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+                        conn.commit()
+                        return False
                     return True
 
             if sha256:
