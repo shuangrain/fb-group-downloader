@@ -1,6 +1,5 @@
 import asyncio
 import re
-from datetime import datetime
 
 from playwright.async_api import Page, Response
 
@@ -9,6 +8,7 @@ from fb_group_downloader.downloader.models import MediaItem, MediaType, PostBund
 from fb_group_downloader.scraper.base import BaseScraper
 from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.scraper.video_extractor import FacebookVideoExtractor
+from fb_group_downloader.utils.date_parser import parse_fb_date
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -234,11 +234,40 @@ class GroupFeedScraper:
                             });
                         }
 
+                        // 擷取貼文發布時間文字
+                        let postTimeStr = "";
+                        const abbrElem = article.querySelector('abbr[aria-label], a[aria-label]');
+                        if (abbrElem) {
+                            postTimeStr = abbrElem.getAttribute('aria-label') || "";
+                        }
+                        if (!postTimeStr) {
+                            for (const l of links) {
+                                const txt = l.innerText ? l.innerText.trim() : "";
+                                if (txt && (txt.includes('年') || txt.includes('月') || txt.includes('日') || txt.includes('天') || txt.includes('小時') || txt.includes('分鐘') || txt.includes('昨天') || txt.includes('前'))) {
+                                    postTimeStr = txt;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!postTimeStr) {
+                            const spans = Array.from(article.querySelectorAll('span'));
+                            for (const s of spans) {
+                                const txt = s.innerText ? s.innerText.trim() : "";
+                                if (txt && (txt.includes('年') || txt.includes('月') || txt.includes('日') || txt.includes('天') || txt.includes('小時') || txt.includes('分鐘') || txt.includes('昨天') || txt.includes('前'))) {
+                                    if (txt.length < 30 && !txt.includes('\n')) {
+                                        postTimeStr = txt;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
                         if (postUrl || images.length > 0 || videos.length > 0 || files.length > 0) {
                             results.push({
                                 postUrl: postUrl,
                                 author: author,
                                 text: text,
+                                postTimeStr: postTimeStr,
                                 images: images,
                                 videos: videos,
                                 files: files
@@ -270,7 +299,8 @@ class GroupFeedScraper:
 
                 author = p_data.get("author", "")
                 text = p_data.get("text", "")
-                post_time = datetime.utcnow().isoformat()
+                post_time_str = p_data.get("postTimeStr", "")
+                post_time = parse_fb_date(post_time_str, reference_text=f"{author} {text}")
                 media_items: list[MediaItem] = []
 
                 # 收集圖片（高解析度原圖優選）

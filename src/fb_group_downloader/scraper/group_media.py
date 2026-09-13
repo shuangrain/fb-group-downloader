@@ -1,13 +1,14 @@
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
-from playwright.async_api import Page
+from playwright.async_api import Page, Response
 
 from fb_group_downloader.config import GroupConfig
 from fb_group_downloader.downloader.models import AlbumBundle, MediaItem, MediaType
 from fb_group_downloader.scraper.base import BaseScraper
 from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
+from fb_group_downloader.utils.date_parser import parse_fb_date
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -19,6 +20,7 @@ class GroupMediaScraper:
         self.config = group_config
         self.group_id = group_config.group_id
         self.seen_album_ids: set[str] = set()
+        self.intercepted_album_times: dict[str, str] = {}
 
     def _extract_album_id(self, url: str) -> str:
         """從相簿網址擷取 Album ID"""
@@ -36,11 +38,29 @@ class GroupMediaScraper:
             return m.group(1)
         return ""
 
+    async def _handle_response(self, response: Response) -> None:
+        """監聽網路回應，攔截 GraphQL 回傳的相簿建立時間"""
+        if "graphql" in response.url and response.status == 200:
+            try:
+                text = await response.text()
+                # 擷取 (album_id, created_time)
+                matches = re.findall(
+                    r'"(?:id|album_id)":\s*"(\d+)".*?"(?:created_time|creation_time)":\s*(\d{10})',
+                    text,
+                )
+                for a_id, ts in matches:
+                    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                    self.intercepted_album_times[a_id] = dt.isoformat()
+            except Exception:
+                pass
+
     async def scan_albums(self, page: Page) -> list[AlbumBundle]:
         """
         掃描社團相簿專區 (https://www.facebook.com/groups/{group_id}/media/albums)
         並依序抓取相簿內的相片建立 AlbumBundle
         """
+        page.on("response", self._handle_response)
+
         url = f"https://www.facebook.com/groups/{self.group_id}/media/albums"
         logger.info(f"正在前往社團相簿專區：{url}")
 
@@ -56,11 +76,13 @@ class GroupMediaScraper:
                 for (const link of links) {
                     const href = link.href;
                     const textElem = link.querySelector('span') || link;
-                    const title = textElem.innerText ? textElem.innerText.trim() : "";
-                    if (title && !title.includes('建立相簿') && !title.includes('Create Album')) {
+                    let title = textElem.innerText ? textElem.innerText.trim() : "";
+                    if (title && !title.includes('建立相簿') && !title.includes('Create Album') && !title.includes('相簿\n更多')) {
+                        // 清理標題，去除張數後綴（如 "8/31-9/11學習區\\n72張相片" -> "8/31-9/11學習區"）
+                        const cleanTitle = title.split('\\n')[0].trim();
                         results.push({
                             url: href,
-                            title: title
+                            title: cleanTitle
                         });
                     }
                 }
@@ -90,7 +112,7 @@ class GroupMediaScraper:
 
             for _ in range(3):
                 photos_data = await page.evaluate(
-                    """() => {
+                    r"""() => {
                         const getBestImgSrc = (img) => {
                             let bestUrl = img.src || "";
                             let maxWidth = 0;
@@ -167,13 +189,18 @@ class GroupMediaScraper:
                 await self.base.human_scroll(page)
 
             if media_items:
+                # 依序使用 GraphQL 攔截的建立時間、或標題內嵌日期、或當前時間
+                album_time = self.intercepted_album_times.get(album_id) or parse_fb_date(
+                    None, reference_text=album_title
+                )
+
                 bundle = AlbumBundle(
                     group_id=self.group_id,
                     group_name=self.config.name,
                     album_id=album_id,
                     album_name=album_title,
                     album_url=album_url,
-                    album_time=datetime.utcnow().isoformat(),
+                    album_time=album_time,
                     media_items=media_items,
                 )
                 album_bundles.append(bundle)
