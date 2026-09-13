@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fb_group_downloader.downloader.models import DownloadRecord, MediaItem, MediaType
+from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -124,11 +125,13 @@ class Database:
                         )
                         conn.commit()
                         return False
-                    # 2. 若為圖片且檔案小於 80KB 且帶有動態牆縮圖參數，自動清除以重新抓取高畫質原圖
-                    if (
-                        media_type == "image"
-                        and file_size < 80 * 1024
-                        and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
+                    # 2. 若為圖片且網址屬於縮圖標記（或檔案過小且帶有縮圖參數），自動刪除舊檔案與記錄，觸發以高畫質原圖取代
+                    if media_type == "image" and (
+                        FacebookPhotoExtractor.is_thumbnail_url(orig_url)
+                        or (
+                            file_size < 100 * 1024
+                            and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
+                        )
                     ):
                         if local_path and Path(local_path).exists():
                             Path(local_path).unlink(missing_ok=True)
