@@ -17,11 +17,31 @@ class FacebookPhotoExtractor:
     def is_thumbnail_url(url: str) -> bool:
         """
         判斷圖片網址是否帶有 Facebook 動態牆卡片的縮放與裁切標記
-        例如 /s526x296/, /p720x720/, /p480x480/, /c0.0.526.296a/
+        例如路徑中的 /s526x296/, /p720x720/, /c0.0.526.296a/
+        或參數中的 ctp=s590x590, stp=dst-jpg_s720x720 等低解析度標記
         """
         if not url:
             return False
-        return bool(re.search(r"/[spc]\d+x\d+[^/]*/|/c\d+\.\d+\.\d+\.\d+a/", url))
+
+        # 1. 檢查路徑中的縮圖標記
+        if re.search(r"/[spc]\d+x\d+[^/]*/|/c\d+\.\d+\.\d+\.\d+a/", url):
+            return True
+
+        # 2. 檢查查詢參數中的縮圖標記 (例如 ctp=s590x590, ctp=s480x480)
+        m_ctp = re.search(r"[?&]ctp=[sp](\d+)x(\d+)", url)
+        if m_ctp:
+            w, h = int(m_ctp.group(1)), int(m_ctp.group(2))
+            if w < 1000 or h < 1000:
+                return True
+
+        # 3. 檢查 stp 參數中的縮圖標記
+        m_stp = re.search(r"stp=[^&]*[sp](\d+)x(\d+)", url)
+        if m_stp:
+            w, h = int(m_stp.group(1)), int(m_stp.group(2))
+            if w < 1000 or h < 1000:
+                return True
+
+        return False
 
     @staticmethod
     def _clean_stream_url(raw_url: str) -> str:
@@ -50,13 +70,13 @@ class FacebookPhotoExtractor:
             matches = re.findall(pat, html_content)
             for m in matches:
                 clean = cls._clean_stream_url(m)
-                if clean and "fbcdn.net" in clean:
+                if clean and "fbcdn.net" in clean and not cls.is_thumbnail_url(clean):
                     return clean
         return None
 
     @classmethod
     async def resolve_high_res_photo_url(
-        cls, page: Page, photo_page_url: str, fallback_url: str = "", timeout_ms: int = 6000
+        cls, page: Page, photo_page_url: str, fallback_url: str = "", timeout_ms: int = 8000
     ) -> str:
         """
         透過 Playwright 瀏覽器開啟相片燈箱頁面 (Photo Viewer)，提取 100% 原始高畫質大圖網址
@@ -66,15 +86,25 @@ class FacebookPhotoExtractor:
 
         try:
             v_page = await page.context.new_page()
+            captured_net_urls: list[str] = []
+
+            def on_response(resp):
+                r_url = resp.url
+                if "fbcdn.net" in r_url and ("jpg" in r_url or "png" in r_url or "webp" in r_url):
+                    if not cls.is_thumbnail_url(r_url):
+                        captured_net_urls.append(r_url)
+
+            v_page.on("response", on_response)
+
             try:
                 await v_page.goto(photo_page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-                await v_page.wait_for_timeout(1000)
+                await v_page.wait_for_timeout(2500)
 
-                # 1. 嘗試從 DOM 取得 Photo Viewer 核心高畫質大圖
+                # 1. 優先從 DOM 取得 Photo Viewer 核心大圖 (data-visualcompletion="media-vc-image")
                 best_dom_url = await v_page.evaluate(
                     r"""() => {
-                        // 1. 優先尋找 Facebook Photo Viewer 的專用大圖標籤
-                        const viewerImg = document.querySelector('img[data-visualcompletion="media-vc-image"], img.spotlight, div[role="dialog"] img[src*="fbcdn.net"]');
+                        // 1. 尋找 Facebook Photo Viewer 的核心大圖標籤
+                        const viewerImg = document.querySelector('img[data-visualcompletion="media-vc-image"], img.spotlight');
                         if (viewerImg) {
                             if (viewerImg.srcset) {
                                 const parts = viewerImg.srcset.split(',');
@@ -95,10 +125,10 @@ class FacebookPhotoExtractor:
                             return viewerImg.currentSrc || viewerImg.src || "";
                         }
 
-                        // 2. 備用：尋找畫面上尺寸最大的圖片
+                        // 2. 尋找 dialog 內尺寸最大的圖片
                         let maxArea = 0;
                         let bestSrc = "";
-                        const imgs = Array.from(document.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
+                        const imgs = Array.from(document.querySelectorAll('div[role="dialog"] img, div[role="main"] img, img[src*="fbcdn.net"]'));
                         for (const img of imgs) {
                             const w = img.naturalWidth || img.width || 0;
                             const h = img.naturalHeight || img.height || 0;
@@ -113,10 +143,15 @@ class FacebookPhotoExtractor:
                 )
 
                 if best_dom_url and "fbcdn.net" in best_dom_url and not cls.is_thumbnail_url(best_dom_url):
-                    logger.debug(f"✓ 成功從 Photo Viewer 解析原尺寸相片：{best_dom_url[:80]}...")
+                    logger.debug(f"✓ 成功從 Photo Viewer DOM 解析原尺寸相片：{best_dom_url[:80]}...")
                     return best_dom_url
 
-                # 2. 檢查頁面 HTML 中的 JSON 標籤
+                # 2. 檢查網路攔截到的無縮圖高畫質圖片
+                if captured_net_urls:
+                    logger.debug(f"✓ 成功從網路攔截解析高解析相片：{captured_net_urls[-1][:80]}...")
+                    return captured_net_urls[-1]
+
+                # 3. 檢查頁面 HTML 中的 JSON 標籤
                 html = await v_page.content()
                 extracted = cls.extract_from_html(html)
                 if extracted:

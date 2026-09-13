@@ -106,10 +106,37 @@ class Database:
 
             if media_id:
                 cursor.execute(
-                    "SELECT 1 FROM downloads WHERE group_id = ? AND media_id = ? LIMIT 1",
+                    "SELECT file_size, media_type, original_url, local_filepath FROM downloads WHERE group_id = ? AND media_id = ? LIMIT 1",
                     (group_id, media_id),
                 )
-                if cursor.fetchone():
+                row = cursor.fetchone()
+                if row:
+                    file_size, media_type, orig_url, local_path = row
+                    # 1. 若為影片且檔案小於 50KB，判定為歷史殘留的 DASH 分段標頭，視為未下載並自動清除
+                    if media_type == "video" and (
+                        file_size < 50 * 1024
+                        or (local_path and Path(local_path).exists() and Path(local_path).stat().st_size < 50 * 1024)
+                    ):
+                        if local_path and Path(local_path).exists():
+                            Path(local_path).unlink(missing_ok=True)
+                        cursor.execute(
+                            "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
+                        )
+                        conn.commit()
+                        return False
+                    # 2. 若為圖片且檔案小於 80KB 且帶有動態牆縮圖參數，自動清除以重新抓取高畫質原圖
+                    if (
+                        media_type == "image"
+                        and file_size < 80 * 1024
+                        and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
+                    ):
+                        if local_path and Path(local_path).exists():
+                            Path(local_path).unlink(missing_ok=True)
+                        cursor.execute(
+                            "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
+                        )
+                        conn.commit()
+                        return False
                     return True
 
             if original_url:
@@ -129,6 +156,51 @@ class Database:
                     return True
 
             return False
+
+    def cleanup_corrupted_and_low_res_records(self, group_id: str | None = None) -> tuple[int, int]:
+        """清除歷史資料庫中損毀的影片分片 (< 50KB) 與低解析度縮圖 (< 80KB)，使後續能下載完整高畫質內容"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            v_filter = " AND group_id = ?" if group_id else ""
+            params = (group_id,) if group_id else ()
+
+            # 刪除損毀影片
+            cursor.execute(
+                f"SELECT local_filepath FROM downloads WHERE media_type = 'video' AND file_size < 50000{v_filter}",
+                params,
+            )
+            for (path_str,) in cursor.fetchall():
+                if path_str:
+                    p = Path(path_str)
+                    if not p.exists() and path_str.startswith("/app/downloads"):
+                        p = Path(path_str.replace("/app/downloads", "downloads"))
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+            cursor.execute(
+                f"DELETE FROM downloads WHERE media_type = 'video' AND file_size < 50000{v_filter}",
+                params,
+            )
+            v_deleted = cursor.rowcount
+
+            # 刪除低解析度圖片
+            cursor.execute(
+                f"SELECT local_filepath FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
+                params,
+            )
+            for (path_str,) in cursor.fetchall():
+                if path_str:
+                    p = Path(path_str)
+                    if not p.exists() and path_str.startswith("/app/downloads"):
+                        p = Path(path_str.replace("/app/downloads", "downloads"))
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+            cursor.execute(
+                f"DELETE FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
+                params,
+            )
+            img_deleted = cursor.rowcount
+            conn.commit()
+            return v_deleted, img_deleted
 
     def add_record(self, record: DownloadRecord) -> int:
         """記錄下載成功的項目，並自動清除該項目的失敗重試紀錄"""

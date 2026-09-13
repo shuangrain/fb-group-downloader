@@ -35,7 +35,12 @@ class SyncCoordinator:
 
         group_downloaded: list[DownloadRecord] = []
 
-        # 0. 先自動重試先前下載失敗的項目
+        # 自動清理舊版殘留的損毀影片 (< 50KB) 與低解析度縮圖 (< 80KB)，以利重新抓取高畫質檔案
+        bad_v, bad_img = self.db.cleanup_corrupted_and_low_res_records(group_id)
+        if bad_v > 0 or bad_img > 0:
+            logger.info(f"🧹 自動清理 {bad_v} 支無效影片碎片與 {bad_img} 張低解析縮圖，準備重新同步高畫質檔案。")
+
+        # 0. 優先重試先前下載失敗的項目
         retry_recs = await download_mgr.retry_pending_failures(group_id)
         if retry_recs:
             group_downloaded.extend(retry_recs)

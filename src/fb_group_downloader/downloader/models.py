@@ -27,6 +27,7 @@ class MediaItem(BaseModel):
     group_name: str | None = None
     media_type: MediaType
     source_url: str
+    audio_url: str | None = None
     media_id: str | None = None
     filename: str | None = None
 

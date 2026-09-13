@@ -22,8 +22,9 @@ class GroupFeedScraper:
         self.seen_post_ids: set[str] = set()
         self.seen_media_urls: set[str] = set()
 
-        # 儲存網路攔截到的影片與高解析度照片直鏈
+        # 儲存網路攔截到的影片、音訊與高解析度照片直鏈
         self.intercepted_video_streams: dict[str, str] = {}
+        self.intercepted_audio_streams: dict[str, str] = {}
         self.captured_cdn_mp4s: list[str] = []
         self.intercepted_photo_urls: dict[str, str] = {}
 
@@ -73,14 +74,25 @@ class GroupFeedScraper:
         return None
 
     async def _handle_response(self, response: Response) -> None:
-        """監聽網路回應，攔截 GraphQL 與 CDN 中的高解析度影片與原尺寸照片直鏈"""
+        """監聽網路回應，攔截 GraphQL 與 CDN 中的高解析度影片（視訊+音訊）與原尺寸照片直鏈"""
         url = response.url
         try:
-            # 1. 攔截 direct CDN mp4 請求
+            # 1. 攔截 direct CDN mp4 請求，剝離 bytestart/byteend 分段標頭取得完整檔案
             if ".mp4" in url and "fbcdn.net" in url:
-                if url not in self.captured_cdn_mp4s:
-                    self.captured_cdn_mp4s.append(url)
-                    logger.debug(f"攔截到 CDN 影片直鏈：{url[:80]}...")
+                clean_stream_url = re.sub(r"&?bytestart=\d+&byteend=\d+", "", url)
+                clean_stream_url = re.sub(r"&?bytestart=\d+", "", clean_stream_url)
+                clean_stream_url = re.sub(r"&?byteend=\d+", "", clean_stream_url)
+
+                m_vid = self._extract_video_id(url)
+                if "audio" in url or "heaac" in url:
+                    if m_vid:
+                        self.intercepted_audio_streams[m_vid] = clean_stream_url
+                else:
+                    if m_vid:
+                        self.intercepted_video_streams[m_vid] = clean_stream_url
+                    if clean_stream_url not in self.captured_cdn_mp4s:
+                        self.captured_cdn_mp4s.append(clean_stream_url)
+                        logger.debug(f"攔截到完整 CDN 影片直鏈：{clean_stream_url[:80]}...")
 
             # 2. 攔截 GraphQL 回傳的 JSON 結構
             if "graphql" in url and response.status == 200:
@@ -91,6 +103,9 @@ class GroupFeedScraper:
                     ids = re.findall(r'"video_id":\s*"(\d+)"', text) or re.findall(r'"id":\s*"(\d+)"', text)
                     for m_url in matches:
                         clean_url = m_url.replace("\\/", "/")
+                        clean_url = re.sub(r"&?bytestart=\d+&byteend=\d+", "", clean_url)
+                        clean_url = re.sub(r"&?bytestart=\d+", "", clean_url)
+                        clean_url = re.sub(r"&?byteend=\d+", "", clean_url)
                         if ids:
                             for v_id in ids:
                                 self.intercepted_video_streams[v_id] = clean_url
@@ -265,10 +280,14 @@ class GroupFeedScraper:
                         photo_url = img_info.get("photoUrl", "")
                         media_id = self._extract_photo_id(photo_url) or f"{post_id}_img_{idx + 1}"
 
+                        # 確保相片有 photo_url 供 Photo Viewer 解析大圖
+                        if not photo_url and media_id and media_id.isdigit():
+                            photo_url = f"https://www.facebook.com/photo/?fbid={media_id}"
+
                         # 1. 優先比對 GraphQL 攔截到的高解析度相片
                         if media_id in self.intercepted_photo_urls:
                             img_src = self.intercepted_photo_urls[media_id]
-                        # 2. 若網址帶有縮圖標籤（如 /s526x296/）且有相片頁面連結，透過 Photo Viewer 解析大圖
+                        # 2. 若網址帶有縮圖標籤且有相片頁面連結，透過 Photo Viewer 解析大圖
                         elif FacebookPhotoExtractor.is_thumbnail_url(img_src) and photo_url:
                             high_res = await FacebookPhotoExtractor.resolve_high_res_photo_url(
                                 page, photo_url, fallback_url=img_src
@@ -307,6 +326,7 @@ class GroupFeedScraper:
                                 self.intercepted_video_streams[vid_id] = direct_stream_url
 
                         final_vid_url = direct_stream_url or vid_url
+                        audio_stream_url = self.intercepted_audio_streams.get(vid_id)
 
                         if final_vid_url and final_vid_url not in self.seen_media_urls:
                             self.seen_media_urls.add(final_vid_url)
@@ -316,6 +336,7 @@ class GroupFeedScraper:
                                     group_name=self.config.name,
                                     media_type=MediaType.VIDEO,
                                     source_url=final_vid_url,
+                                    audio_url=audio_stream_url,
                                     media_id=f"{vid_id}",
                                     post_id=post_id,
                                     post_author=author,
