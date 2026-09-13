@@ -70,7 +70,7 @@ class GroupMediaScraper:
 
         # 擷取所有相簿列表
         albums_info = await page.evaluate(
-            """() => {
+            r"""() => {
                 const results = [];
                 const links = Array.from(document.querySelectorAll('a[href*="/media/set/"], a[href*="/albums/"]'));
                 for (const link of links) {

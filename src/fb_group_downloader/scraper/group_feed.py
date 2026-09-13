@@ -148,7 +148,7 @@ class GroupFeedScraper:
 
         while len(self.seen_post_ids) < max_posts:
             posts_data = await page.evaluate(
-                """() => {
+                r"""() => {
                     const getBestImgSrc = (img) => {
                         let bestUrl = img.src || "";
                         let maxWidth = 0;
