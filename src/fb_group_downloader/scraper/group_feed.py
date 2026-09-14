@@ -342,7 +342,12 @@ class GroupFeedScraper:
                         direct_stream_url = self.intercepted_video_streams.get(vid_id)
                         audio_stream_url = self.intercepted_audio_streams.get(vid_id)
 
-                        if not direct_stream_url and vid_url and not vid_url.endswith(".mp4"):
+                        is_dash = direct_stream_url and (
+                            "dash" in direct_stream_url.lower() or "vp9" in direct_stream_url.lower()
+                        )
+                        need_resolve = (not direct_stream_url) or (is_dash and not audio_stream_url)
+
+                        if need_resolve and vid_url and not vid_url.endswith(".mp4"):
                             resolved_v, resolved_a = await FacebookVideoExtractor.resolve_video_streams(page, vid_url)
                             if resolved_v:
                                 direct_stream_url = resolved_v

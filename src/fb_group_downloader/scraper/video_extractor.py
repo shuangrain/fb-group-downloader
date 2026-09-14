@@ -214,15 +214,27 @@ class FacebookVideoExtractor:
                 await v_page.goto(video_page_url, wait_until="domcontentloaded", timeout=timeout_ms)
                 await v_page.wait_for_timeout(2000)
 
-                # 嘗試從 DOM 點擊播放以觸發影片串流
+                # 嘗試從 DOM 取消靜音並播放以同時觸發視訊與音訊串流
                 try:
-                    video_elem = v_page.locator("video, div[data-video-id], div[aria-label*='播放']").first
-                    if await video_elem.is_visible(timeout=500):
-                        await video_elem.hover()
+                    await v_page.evaluate("""() => {
+                        document.querySelectorAll('video').forEach(v => {
+                            v.muted = false;
+                            v.volume = 1.0;
+                            v.play().catch(() => {});
+                        });
+                    }""")
+                    unmute_btn = v_page.locator(
+                        "div[aria-label*='取消靜音'], div[aria-label*='Unmute'], div[aria-label*='播放'], div[aria-label*='Play']"
+                    ).first
+                    if await unmute_btn.is_visible(timeout=500):
+                        await unmute_btn.click()
                 except Exception:
                     pass
 
-                # 1. 優先檢查網路攔截到的串流（選取最高畫質視訊軌）
+                # 等候音訊串流與高畫質視訊軌請求發出
+                await v_page.wait_for_timeout(2000)
+
+                # 1. 優先檢查網路攔截到的串流（選取最高畫質視訊軌與對應音訊軌）
                 if captured_videos:
                     captured_videos.sort(key=lambda x: x[0], reverse=True)
                     video_url = captured_videos[0][1]

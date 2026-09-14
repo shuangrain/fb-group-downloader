@@ -38,8 +38,8 @@ class Database:
         return p
 
     @staticmethod
-    def is_valid_video_file(file_path: Path | str | None) -> bool:
-        """檢驗本機影片檔案是否具備有效視訊軌且非損毀/純音訊/未完成分片"""
+    def is_valid_video_file(file_path: Path | str | None, original_url: str | None = None) -> bool:
+        """檢驗本機影片檔案是否具備有效視訊軌且非損毀/純音訊/未完成分片/缺少音訊"""
         if not file_path:
             return False
         p = Path(file_path)
@@ -49,6 +49,7 @@ class Database:
         ffprobe_bin = shutil.which("ffprobe")
         if ffprobe_bin:
             try:
+                # 1. 檢驗視訊畫面軌
                 res = subprocess.run(
                     [
                         ffprobe_bin,
@@ -66,9 +67,33 @@ class Database:
                     text=True,
                     timeout=5,
                 )
-                if res.returncode == 0 and "video" in res.stdout.strip().lower():
-                    return True
-                return False
+                if res.returncode != 0 or "video" not in res.stdout.strip().lower():
+                    return False
+
+                # 2. 若原始網址為 DASH / VP9 分離串流，檢驗音訊軌是否存在
+                if original_url and ("dash" in original_url.lower() or "vp9" in original_url.lower()):
+                    res_a = subprocess.run(
+                        [
+                            ffprobe_bin,
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a:0",
+                            "-show_entries",
+                            "stream=codec_type",
+                            "-of",
+                            "default=noprint_wrappers=1:nokey=1",
+                            str(p),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if res_a.returncode == 0 and "audio" not in res_a.stdout.strip().lower():
+                        logger.warning(f"偵測到影片缺少音訊軌 (DASH 串流未合成音訊)：{p.name}")
+                        return False
+
+                return True
             except Exception:
                 return False
 
@@ -180,14 +205,14 @@ class Database:
                 row = cursor.fetchone()
                 if row:
                     file_size, media_type, orig_url, local_path = row
-                    # 1. 若為影片，檢查是否為歷史損毀分片、純音訊軌、缺少視訊軌或檔案過小
+                    # 1. 若為影片，檢查是否為歷史損毀分片、純音訊軌、缺少視訊軌、缺少音訊或檔案過小
                     if media_type == "video":
                         p = self._resolve_local_path(local_path)
                         is_chunk_url = "bytestart=" in (orig_url or "")
-                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p):
+                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p, orig_url):
                             actual_size = p.stat().st_size if (p and p.exists()) else file_size
                             logger.warning(
-                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面之影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or media_id}"
+                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面/聲音之影片 ({actual_size} bytes)，清除舊檔以重新下載完整影片：{local_path or media_id}"
                             )
                             if p and p.exists():
                                 p.unlink(missing_ok=True)
@@ -227,10 +252,10 @@ class Database:
                     if media_type == "video":
                         p = self._resolve_local_path(local_path)
                         is_chunk_url = "bytestart=" in (original_url or "")
-                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p):
+                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p, original_url):
                             actual_size = p.stat().st_size if (p and p.exists()) else file_size
                             logger.warning(
-                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面之影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or original_url}"
+                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面/聲音之影片 ({actual_size} bytes)，清除舊檔以重新下載完整影片：{local_path or original_url}"
                             )
                             if p and p.exists():
                                 p.unlink(missing_ok=True)
@@ -283,7 +308,7 @@ class Database:
             for rec_id, orig_url, path_str in v_rows:
                 p = self._resolve_local_path(path_str)
                 is_chunk = "bytestart=" in (orig_url or "")
-                if is_chunk or not p or not p.exists() or not self.is_valid_video_file(p):
+                if is_chunk or not p or not p.exists() or not self.is_valid_video_file(p, orig_url):
                     v_to_delete.append(rec_id)
                     if p and p.exists():
                         p.unlink(missing_ok=True)
