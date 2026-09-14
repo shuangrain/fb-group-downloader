@@ -119,7 +119,15 @@ class VideoDownloader:
         clean_source_url = FacebookVideoExtractor.strip_byte_range_params(item.source_url)
         clean_audio_url = FacebookVideoExtractor.strip_byte_range_params(item.audio_url) if item.audio_url else None
 
-        # 情況 A：若存在獨立音訊軌且系統支援 ffmpeg，分別下載視訊與音訊後進行無損封裝合併
+        # 容錯處理：若 source_url 誤為純音訊軌，而 audio_url 為視訊軌，自動校正調換
+        if FacebookVideoExtractor.is_audio_stream(clean_source_url):
+            if clean_audio_url and not FacebookVideoExtractor.is_audio_stream(clean_audio_url):
+                clean_source_url, clean_audio_url = clean_audio_url, clean_source_url
+            else:
+                logger.warning(f"偵測到來源為純音訊串流，缺少視訊畫面軌，跳過下載：{clean_source_url[:80]}...")
+                return False
+
+        # 情況 A：若存在獨立音訊軌且系統支援 ffmpeg，分別下載視訊與音訊後進行轉碼/封裝合併
         if clean_audio_url and ffmpeg_bin:
             temp_v = output_file.with_suffix(".temp_v.mp4")
             temp_a = output_file.with_suffix(".temp_a.mp4")
@@ -128,7 +136,10 @@ class VideoDownloader:
                 a_ok = await self._download_stream_to_file(clean_audio_url, temp_a, cookies, headers)
 
                 if v_ok and a_ok and temp_v.exists() and temp_v.stat().st_size >= self.MIN_VALID_VIDEO_BYTES:
-                    # 使用 ffmpeg 進行 -c copy 快速無損音畫封裝
+                    # 檢查視訊是否為 VP9，若為 VP9 轉碼為標準 H.264 以確保 Windows / Mac / 手機皆能順暢播放畫面
+                    is_vp9 = FacebookVideoExtractor.is_vp9_stream(clean_source_url)
+                    v_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"] if is_vp9 else ["-c:v", "copy"]
+
                     cmd = [
                         ffmpeg_bin,
                         "-y",
@@ -136,14 +147,19 @@ class VideoDownloader:
                         str(temp_v),
                         "-i",
                         str(temp_a),
-                        "-c",
-                        "copy",
+                        *v_codec,
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "192k",
+                        "-movflags",
+                        "+faststart",
                         str(output_file),
                     ]
                     proc = await asyncio.create_subprocess_exec(
-                        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
                     )
-                    await proc.wait()
+                    _, stderr = await proc.communicate()
 
                     if (
                         proc.returncode == 0
@@ -152,6 +168,9 @@ class VideoDownloader:
                     ):
                         logger.debug(f"✓ 透過 ffmpeg 成功合併視訊與音訊軌：{output_file.name}")
                         return True
+                    else:
+                        err_text = stderr.decode("utf-8", errors="ignore") if stderr else ""
+                        logger.warning(f"ffmpeg 影音合成失敗 (code {proc.returncode})：{err_text[:200]}")
             finally:
                 temp_v.unlink(missing_ok=True)
                 temp_a.unlink(missing_ok=True)
@@ -163,6 +182,40 @@ class VideoDownloader:
             logger.warning(f"串流檔案過小 ({size} bytes)，判定為非完整影片或無效分片。")
             output_file.unlink(missing_ok=True)
             return False
+
+        # 若單一檔案為 VP9，亦轉碼為 H.264 以保證通用相容性
+        if ffmpeg_bin and FacebookVideoExtractor.is_vp9_stream(clean_source_url):
+            temp_conv = output_file.with_suffix(".temp_conv.mp4")
+            try:
+                cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    str(output_file),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "22",
+                    "-c:a",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    str(temp_conv),
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc.wait()
+                if (
+                    proc.returncode == 0
+                    and temp_conv.exists()
+                    and temp_conv.stat().st_size >= self.MIN_VALID_VIDEO_BYTES
+                ):
+                    temp_conv.replace(output_file)
+            finally:
+                temp_conv.unlink(missing_ok=True)
 
         return True
 

@@ -72,12 +72,16 @@ class GroupFeedScraper:
                 clean_stream_url = FacebookVideoExtractor.strip_byte_range_params(url)
 
                 m_vid = self._extract_video_id(url)
-                if "audio" in url or "heaac" in url:
+                if FacebookVideoExtractor.is_audio_stream(url):
                     if m_vid:
                         self.intercepted_audio_streams[m_vid] = clean_stream_url
                 else:
                     if m_vid:
-                        self.intercepted_video_streams[m_vid] = clean_stream_url
+                        existing = self.intercepted_video_streams.get(m_vid)
+                        if not existing or FacebookVideoExtractor.get_video_stream_quality(
+                            url
+                        ) >= FacebookVideoExtractor.get_video_stream_quality(existing):
+                            self.intercepted_video_streams[m_vid] = clean_stream_url
                     if clean_stream_url not in self.captured_cdn_mp4s:
                         self.captured_cdn_mp4s.append(clean_stream_url)
                         logger.debug(f"攔截到完整 CDN 影片直鏈：{clean_stream_url[:80]}...")
@@ -352,6 +356,12 @@ class GroupFeedScraper:
                             final_vid_url = FacebookVideoExtractor.strip_byte_range_params(final_vid_url)
                         if audio_stream_url:
                             audio_stream_url = FacebookVideoExtractor.strip_byte_range_params(audio_stream_url)
+
+                        # 若直鏈為純音訊軌，將其正確歸類至音訊，避免視訊軌缺少畫面
+                        if final_vid_url and FacebookVideoExtractor.is_audio_stream(final_vid_url):
+                            if not audio_stream_url:
+                                audio_stream_url = final_vid_url
+                            final_vid_url = None
 
                         if final_vid_url and final_vid_url not in self.seen_media_urls:
                             self.seen_media_urls.add(final_vid_url)

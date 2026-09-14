@@ -1,5 +1,7 @@
 import json
+import shutil
 import sqlite3
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,71 @@ class Database:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    @staticmethod
+    def _resolve_local_path(local_path: str | None) -> Path | None:
+        """處理本機與容器間掛載路徑可能存在的 /app/downloads/ 與 downloads/ 差異"""
+        if not local_path:
+            return None
+        p = Path(local_path)
+        if p.exists():
+            return p
+        if local_path.startswith("/app/downloads/"):
+            rel_p = Path(local_path[len("/app/") :])
+            if rel_p.exists():
+                return rel_p
+        elif local_path.startswith("downloads/"):
+            app_p = Path("/app") / local_path
+            if app_p.exists():
+                return app_p
+        return p
+
+    @staticmethod
+    def is_valid_video_file(file_path: Path | str | None) -> bool:
+        """檢驗本機影片檔案是否具備有效視訊軌且非損毀/純音訊/未完成分片"""
+        if not file_path:
+            return False
+        p = Path(file_path)
+        if not p.exists() or p.stat().st_size < 50 * 1024:
+            return False
+
+        ffprobe_bin = shutil.which("ffprobe")
+        if ffprobe_bin:
+            try:
+                res = subprocess.run(
+                    [
+                        ffprobe_bin,
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=codec_type",
+                        "-of",
+                        "default=noprint_wrappers=1:nokey=1",
+                        str(p),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if res.returncode == 0 and "video" in res.stdout.strip().lower():
+                    return True
+                return False
+            except Exception:
+                return False
+
+        # 若環境未安裝 ffprobe，檢查 MP4 容器結構特徵
+        try:
+            with open(p, "rb") as f:
+                header = f.read(1024 * 1024)
+                if b"ftyp" not in header[:64]:
+                    return False
+                if b"vide" not in header:
+                    return False
+                return True
+        except Exception:
+            return False
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -113,45 +180,40 @@ class Database:
                 row = cursor.fetchone()
                 if row:
                     file_size, media_type, orig_url, local_path = row
-                    # 1. 若為影片且檔案小於 50KB，判定為歷史殘留的 DASH 分段標頭，視為未下載並自動清除
-                    if media_type == "video" and (
-                        file_size < 50 * 1024
-                        or (local_path and Path(local_path).exists() and Path(local_path).stat().st_size < 50 * 1024)
-                    ):
-                        actual_size = (
-                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
-                        )
-                        logger.warning(
-                            f"[畫質升級/修復] 偵測到歷史殘留之無效/過小影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or media_id}"
-                        )
-                        if local_path and Path(local_path).exists():
-                            Path(local_path).unlink(missing_ok=True)
-                        cursor.execute(
-                            "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
-                        )
-                        conn.commit()
-                        return False
+                    # 1. 若為影片，檢查是否為歷史損毀分片、純音訊軌、缺少視訊軌或檔案過小
+                    if media_type == "video":
+                        p = self._resolve_local_path(local_path)
+                        is_chunk_url = "bytestart=" in (orig_url or "")
+                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p):
+                            actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            logger.warning(
+                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面之影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or media_id}"
+                            )
+                            if p and p.exists():
+                                p.unlink(missing_ok=True)
+                            cursor.execute(
+                                "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
+                            )
+                            conn.commit()
+                            return False
                     # 2. 若為圖片且網址屬於縮圖標記（或檔案過小且帶有縮圖參數），自動刪除舊檔案與記錄，觸發以高畫質原圖取代
-                    if media_type == "image" and (
-                        FacebookPhotoExtractor.is_thumbnail_url(orig_url)
-                        or (
+                    if media_type == "image":
+                        p = self._resolve_local_path(local_path)
+                        if FacebookPhotoExtractor.is_thumbnail_url(orig_url) or (
                             file_size < 100 * 1024
                             and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
-                        )
-                    ):
-                        actual_size = (
-                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
-                        )
-                        logger.warning(
-                            f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or orig_url}"
-                        )
-                        if local_path and Path(local_path).exists():
-                            Path(local_path).unlink(missing_ok=True)
-                        cursor.execute(
-                            "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
-                        )
-                        conn.commit()
-                        return False
+                        ):
+                            actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            logger.warning(
+                                f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or orig_url}"
+                            )
+                            if p and p.exists():
+                                p.unlink(missing_ok=True)
+                            cursor.execute(
+                                "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
+                            )
+                            conn.commit()
+                            return False
                     return True
 
             if original_url:
@@ -162,41 +224,36 @@ class Database:
                 row = cursor.fetchone()
                 if row:
                     rec_id, file_size, media_type, local_path = row
-                    if media_type == "video" and (
-                        file_size < 50 * 1024
-                        or (local_path and Path(local_path).exists() and Path(local_path).stat().st_size < 50 * 1024)
-                    ):
-                        actual_size = (
-                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
-                        )
-                        logger.warning(
-                            f"[畫質升級/修復] 偵測到歷史殘留之無效/過小影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or original_url}"
-                        )
-                        if local_path and Path(local_path).exists():
-                            Path(local_path).unlink(missing_ok=True)
-                        cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
-                        conn.commit()
-                        return False
-                    if media_type == "image" and (
-                        FacebookPhotoExtractor.is_thumbnail_url(original_url)
-                        or (
+                    if media_type == "video":
+                        p = self._resolve_local_path(local_path)
+                        is_chunk_url = "bytestart=" in (original_url or "")
+                        if is_chunk_url or not p or not p.exists() or not self.is_valid_video_file(p):
+                            actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            logger.warning(
+                                f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面之影片 ({actual_size} bytes)，清除舊檔以重新下載高畫質影片：{local_path or original_url}"
+                            )
+                            if p and p.exists():
+                                p.unlink(missing_ok=True)
+                            cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+                            conn.commit()
+                            return False
+                    if media_type == "image":
+                        p = self._resolve_local_path(local_path)
+                        if FacebookPhotoExtractor.is_thumbnail_url(original_url) or (
                             file_size < 100 * 1024
                             and (
                                 "ctp=s" in original_url or "/s526x296/" in original_url or "/p720x720/" in original_url
                             )
-                        )
-                    ):
-                        actual_size = (
-                            Path(local_path).stat().st_size if (local_path and Path(local_path).exists()) else file_size
-                        )
-                        logger.warning(
-                            f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or original_url}"
-                        )
-                        if local_path and Path(local_path).exists():
-                            Path(local_path).unlink(missing_ok=True)
-                        cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
-                        conn.commit()
-                        return False
+                        ):
+                            actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            logger.warning(
+                                f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or original_url}"
+                            )
+                            if p and p.exists():
+                                p.unlink(missing_ok=True)
+                            cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+                            conn.commit()
+                            return False
                     return True
 
             if sha256:
@@ -210,47 +267,48 @@ class Database:
             return False
 
     def cleanup_corrupted_and_low_res_records(self, group_id: str | None = None) -> tuple[int, int]:
-        """清除歷史資料庫中損毀的影片分片 (< 50KB) 與低解析度縮圖 (< 80KB)，使後續能下載完整高畫質內容"""
+        """清除歷史資料庫中損毀的影片分片/缺少畫面之影片與低解析度縮圖，使後續能下載完整高畫質內容"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             v_filter = " AND group_id = ?" if group_id else ""
             params = (group_id,) if group_id else ()
 
-            # 刪除損毀影片
+            # 刪除損毀影片（含分段碎片、純音訊或缺少畫面）
             cursor.execute(
-                f"SELECT local_filepath FROM downloads WHERE media_type = 'video' AND file_size < 50000{v_filter}",
+                f"SELECT id, original_url, local_filepath FROM downloads WHERE media_type = 'video'{v_filter}",
                 params,
             )
-            for (path_str,) in cursor.fetchall():
-                if path_str:
-                    p = Path(path_str)
-                    if not p.exists() and path_str.startswith("/app/downloads"):
-                        p = Path(path_str.replace("/app/downloads", "downloads"))
-                    if p.exists():
+            v_rows = cursor.fetchall()
+            v_to_delete = []
+            for rec_id, orig_url, path_str in v_rows:
+                p = self._resolve_local_path(path_str)
+                is_chunk = "bytestart=" in (orig_url or "")
+                if is_chunk or not p or not p.exists() or not self.is_valid_video_file(p):
+                    v_to_delete.append(rec_id)
+                    if p and p.exists():
                         p.unlink(missing_ok=True)
-            cursor.execute(
-                f"DELETE FROM downloads WHERE media_type = 'video' AND file_size < 50000{v_filter}",
-                params,
-            )
-            v_deleted = cursor.rowcount
+
+            for rec_id in v_to_delete:
+                cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+            v_deleted = len(v_to_delete)
 
             # 刪除低解析度圖片
             cursor.execute(
-                f"SELECT local_filepath FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
+                f"SELECT id, local_filepath FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
                 params,
             )
-            for (path_str,) in cursor.fetchall():
-                if path_str:
-                    p = Path(path_str)
-                    if not p.exists() and path_str.startswith("/app/downloads"):
-                        p = Path(path_str.replace("/app/downloads", "downloads"))
-                    if p.exists():
-                        p.unlink(missing_ok=True)
-            cursor.execute(
-                f"DELETE FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
-                params,
-            )
-            img_deleted = cursor.rowcount
+            img_rows = cursor.fetchall()
+            img_to_delete = []
+            for rec_id, path_str in img_rows:
+                img_to_delete.append(rec_id)
+                p = self._resolve_local_path(path_str)
+                if p and p.exists():
+                    p.unlink(missing_ok=True)
+
+            for rec_id in img_to_delete:
+                cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
+            img_deleted = len(img_to_delete)
+
             conn.commit()
             return v_deleted, img_deleted
 

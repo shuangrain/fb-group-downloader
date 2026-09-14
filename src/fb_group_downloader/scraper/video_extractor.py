@@ -78,9 +78,73 @@ class FacebookVideoExtractor:
             pass
         return cleaned.strip()
 
+    @staticmethod
+    def is_audio_stream(url: str) -> bool:
+        """判斷是否為純音訊串流（檢查網址及 efg base64 參數中的 vencode_tag）"""
+        if not url:
+            return False
+        if "audio" in url.lower() or "heaac" in url.lower():
+            return True
+        try:
+            parsed = urlparse(url)
+            qs = parse_qsl(parsed.query)
+            for k, v in qs:
+                if k == "efg":
+                    padded = v + "=" * (-len(v) % 4)
+                    data = json.loads(base64.b64decode(padded).decode("utf-8", errors="ignore"))
+                    vtag = data.get("vencode_tag", "").lower()
+                    if "audio" in vtag or "heaac" in vtag or "opus" in vtag:
+                        return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def get_video_stream_quality(url: str) -> int:
+        """從 efg 參數擷取視訊解析度高度（例如 1080, 720, 360），用以優先選取高畫質視訊軌"""
+        if not url:
+            return 0
+        try:
+            parsed = urlparse(url)
+            qs = parse_qsl(parsed.query)
+            for k, v in qs:
+                if k == "efg":
+                    padded = v + "=" * (-len(v) % 4)
+                    data = json.loads(base64.b64decode(padded).decode("utf-8", errors="ignore"))
+                    vtag = data.get("vencode_tag", "")
+                    m = re.search(r"(\d+)p", vtag)
+                    if m:
+                        return int(m.group(1))
+                    if "bitrate" in data:
+                        return int(data["bitrate"])
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def is_vp9_stream(url: str) -> bool:
+        """檢查是否為 VP9 或 AV1 等需要轉碼為通用相容格式 (H.264) 的串流"""
+        if not url:
+            return False
+        if "vp9" in url.lower() or "av1" in url.lower():
+            return True
+        try:
+            parsed = urlparse(url)
+            qs = parse_qsl(parsed.query)
+            for k, v in qs:
+                if k == "efg":
+                    padded = v + "=" * (-len(v) % 4)
+                    data = json.loads(base64.b64decode(padded).decode("utf-8", errors="ignore"))
+                    vtag = data.get("vencode_tag", "").lower()
+                    if "vp9" in vtag or "av1" in vtag:
+                        return True
+        except Exception:
+            pass
+        return False
+
     @classmethod
     def extract_from_html(cls, html_content: str) -> str | None:
-        """從 Facebook 頁面原始碼中搜尋各類 video stream 屬性與 JSON 標籤"""
+        """從 Facebook 頁面原始碼中搜尋各類 video stream 屬性與 JSON 標籤（排除純音訊軌）"""
         patterns = [
             r'"playable_url_quality_hd":\s*"([^"]+)"',
             r'"browser_native_hd_url":\s*"([^"]+)"',
@@ -101,10 +165,11 @@ class FacebookVideoExtractor:
                 clean = cls._clean_stream_url(m)
                 if clean:
                     clean = cls.strip_byte_range_params(clean)
-                    if "fbcdn.net" in clean and ("mp4" in clean or "video" in clean or "bytestart" in clean):
-                        return clean
-                    if clean.startswith("http") and not clean.startswith("blob:"):
-                        return clean
+                    if not cls.is_audio_stream(clean):
+                        if "fbcdn.net" in clean and ("mp4" in clean or "video" in clean or "bytestart" in clean):
+                            return clean
+                        if clean.startswith("http") and not clean.startswith("blob:"):
+                            return clean
 
         return None
 
@@ -114,26 +179,29 @@ class FacebookVideoExtractor:
     ) -> tuple[str | None, str | None]:
         """
         在 Playwright 已登入的 session 瀏覽器中開啟影片貼文網址，
-        攔截並提取真實的 .mp4 視訊與音訊 CDN 直鏈（已自動移除 bytestart/byteend 分段標頭以取得完整檔案）
+        精準分離並提取真實的 .mp4 高畫質視訊軌與音訊軌 CDN 直鏈（已自動移除 bytestart/byteend 分段標頭）
         回傳 (video_stream_url, audio_stream_url)
         """
         if ".mp4" in video_page_url and "fbcdn.net" in video_page_url:
             clean_url = cls.strip_byte_range_params(video_page_url)
+            if cls.is_audio_stream(clean_url):
+                return None, clean_url
             return clean_url, None
 
-        captured_videos: list[str] = []
+        captured_videos: list[tuple[int, str]] = []  # (quality_score, url)
         captured_audios: list[str] = []
 
         def on_response(response):
             r_url = response.url
             if ".mp4" in r_url and "fbcdn.net" in r_url:
                 clean_url = cls.strip_byte_range_params(r_url)
-                if "audio" in r_url or "heaac" in r_url:
+                if cls.is_audio_stream(r_url):
                     if clean_url not in captured_audios:
                         captured_audios.append(clean_url)
                 else:
-                    if clean_url not in captured_videos:
-                        captured_videos.append(clean_url)
+                    q = cls.get_video_stream_quality(r_url)
+                    if not any(u == clean_url for _, u in captured_videos):
+                        captured_videos.append((q, clean_url))
 
         page.on("response", on_response)
         logger.debug(f"正在嘗試透過瀏覽器解析影片直鏈：{video_page_url[:80]}...")
@@ -144,7 +212,7 @@ class FacebookVideoExtractor:
 
             try:
                 await v_page.goto(video_page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-                await v_page.wait_for_timeout(1500)
+                await v_page.wait_for_timeout(2000)
 
                 # 嘗試從 DOM 點擊播放以觸發影片串流
                 try:
@@ -154,11 +222,13 @@ class FacebookVideoExtractor:
                 except Exception:
                     pass
 
-                # 1. 優先檢查網路攔截到的串流
+                # 1. 優先檢查網路攔截到的串流（選取最高畫質視訊軌）
                 if captured_videos:
-                    video_url = captured_videos[0]
+                    captured_videos.sort(key=lambda x: x[0], reverse=True)
+                    video_url = captured_videos[0][1]
                     audio_url = captured_audios[0] if captured_audios else None
-                    logger.info(f"✓ 成功攔截到影片 CDN 直鏈：{video_url[:80]}...")
+                    q_label = f" ({captured_videos[0][0]}p)" if captured_videos[0][0] > 0 else ""
+                    logger.info(f"✓ 成功攔截到影片視訊軌{q_label}與音訊軌：{video_url[:80]}...")
                     return video_url, audio_url
 
                 # 2. 檢查頁面 HTML 中的 JSON 標籤

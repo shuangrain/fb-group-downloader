@@ -95,3 +95,52 @@ def test_database_low_res_and_corrupt_invalidation(tmp_path: Path):
     # 查詢時應判定為未下載 (False)，並刪除檔案與記錄
     assert not db.is_downloaded(group_id="group1", media_id="vid_1")
     assert not temp_vid.exists()
+
+    # 3. 建立帶有 bytestart 分段參數的大型影片記錄 (2MB)
+    temp_chunk_vid = tmp_path / "chunk_vid.mp4"
+    temp_chunk_vid.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"x" * 100000)
+
+    chunk_rec = DownloadRecord(
+        group_id="group1",
+        media_id="vid_chunk",
+        media_type=MediaType.VIDEO,
+        original_url="https://scontent.xx.fbcdn.net/v/t2/vid.mp4?bytestart=100&byteend=200",
+        local_filepath=str(temp_chunk_vid),
+        file_size=100024,
+    )
+    db.add_record(chunk_rec)
+    assert not db.is_downloaded(group_id="group1", media_id="vid_chunk")
+    assert not temp_chunk_vid.exists()
+
+    # 4. 建立正常合法影片記錄 (具備 ftyp 與 vide 軌)
+    valid_vid = tmp_path / "valid.mp4"
+    valid_vid.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00" + b"vide" + b"x" * 60000)
+
+    valid_rec = DownloadRecord(
+        group_id="group1",
+        media_id="vid_valid",
+        media_type=MediaType.VIDEO,
+        original_url="https://scontent.xx.fbcdn.net/v/t2/valid.mp4",
+        local_filepath=str(valid_vid),
+        file_size=len(valid_vid.read_bytes()),
+    )
+    db.add_record(valid_rec)
+    assert db.is_downloaded(group_id="group1", media_id="vid_valid")
+    assert valid_vid.exists()
+
+    # 5. 測試批次清理 cleanup_corrupted_and_low_res_records
+    temp_corrupt2 = tmp_path / "corrupt2.mp4"
+    temp_corrupt2.write_bytes(b"bad data")
+    db.add_record(
+        DownloadRecord(
+            group_id="group1",
+            media_id="vid_bad2",
+            media_type=MediaType.VIDEO,
+            original_url="https://scontent.xx.fbcdn.net/v/t2/bad.mp4",
+            local_filepath=str(temp_corrupt2),
+            file_size=8,
+        )
+    )
+    v_del, img_del = db.cleanup_corrupted_and_low_res_records("group1")
+    assert v_del >= 1
+    assert not temp_corrupt2.exists()
