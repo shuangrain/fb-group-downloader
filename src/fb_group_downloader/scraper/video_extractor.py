@@ -122,6 +122,27 @@ class FacebookVideoExtractor:
         return 0
 
     @staticmethod
+    def is_dash_stream(url: str) -> bool:
+        """檢查是否為 DASH 音畫分離之視訊串流（需同時具備音訊軌才能合成完整影片）"""
+        if not url:
+            return False
+        if "dash" in url.lower() or "vp9" in url.lower() or "av1" in url.lower():
+            return True
+        try:
+            parsed = urlparse(url)
+            qs = parse_qsl(parsed.query)
+            for k, v in qs:
+                if k == "efg":
+                    padded = v + "=" * (-len(v) % 4)
+                    data = json.loads(base64.b64decode(padded).decode("utf-8", errors="ignore"))
+                    vtag = data.get("vencode_tag", "").lower()
+                    if "dash" in vtag or "vp9" in vtag or "av1" in vtag:
+                        return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def is_vp9_stream(url: str) -> bool:
         """檢查是否為 VP9 或 AV1 等需要轉碼為通用相容格式 (H.264) 的串流"""
         if not url:

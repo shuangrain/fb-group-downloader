@@ -8,6 +8,7 @@ from typing import Any
 
 from fb_group_downloader.downloader.models import DownloadRecord, MediaItem, MediaType
 from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
+from fb_group_downloader.scraper.video_extractor import FacebookVideoExtractor
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -71,7 +72,7 @@ class Database:
                     return False
 
                 # 2. 若原始網址為 DASH / VP9 分離串流，檢驗音訊軌是否存在
-                if original_url and ("dash" in original_url.lower() or "vp9" in original_url.lower()):
+                if original_url and FacebookVideoExtractor.is_dash_stream(original_url):
                     res_a = subprocess.run(
                         [
                             ffprobe_bin,

@@ -127,6 +127,11 @@ class VideoDownloader:
                 logger.warning(f"偵測到來源為純音訊串流，缺少視訊畫面軌，跳過下載：{clean_source_url[:80]}...")
                 return False
 
+        # 若來源為 DASH 分離串流卻缺少音訊軌，回傳 False 以便觸發備用下載策略 (yt-dlp) 抓取完整影音
+        if FacebookVideoExtractor.is_dash_stream(clean_source_url) and not clean_audio_url:
+            logger.info(f"偵測到 DASH 視訊串流缺少對應音訊軌，轉交備用下載策略：{clean_source_url[:80]}...")
+            return False
+
         # 情況 A：若存在獨立音訊軌且系統支援 ffmpeg，分別下載視訊與音訊後進行轉碼/封裝合併
         if clean_audio_url and ffmpeg_bin:
             temp_v = output_file.with_suffix(".temp_v.mp4")

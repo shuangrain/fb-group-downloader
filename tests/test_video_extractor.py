@@ -67,6 +67,7 @@ def test_stream_type_and_quality_detection():
     v1080_url = f"https://scontent.xx.fbcdn.net/o1/v/stream.mp4?efg={v1080_b64}"
 
     assert not FacebookVideoExtractor.is_audio_stream(v1080_url)
+    assert FacebookVideoExtractor.is_dash_stream(v1080_url)
     assert FacebookVideoExtractor.is_vp9_stream(v1080_url)
     assert FacebookVideoExtractor.get_video_stream_quality(v1080_url) == 1080
 
