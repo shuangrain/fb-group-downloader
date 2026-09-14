@@ -27,3 +27,22 @@ def test_photo_extractor_extract_from_html():
     assert extracted is not None
     assert "high_res_photo.jpg" in extracted
     assert "https://scontent-tpe1-1.xx.fbcdn.net" in extracted
+
+
+def test_is_icon_or_ui_asset():
+    emoji_url = "https://static.xx.fbcdn.net/images/emoji.php/v9/t2/1/16/1f60d.png"
+    rsrc_url = "https://static.xx.fbcdn.net/rsrc.php/v3/y1/r/abc.png"
+    photo_url = "https://scontent.ftpe7-1.fna.fbcdn.net/v/t39.30808-6/456_n.jpg"
+
+    assert FacebookPhotoExtractor.is_icon_or_ui_asset(emoji_url) is True
+    assert FacebookPhotoExtractor.is_icon_or_ui_asset(rsrc_url) is True
+    assert FacebookPhotoExtractor.is_icon_or_ui_asset(photo_url) is False
+
+
+def test_get_image_dimensions():
+    import struct
+
+    # 構造 16x16 的 PNG 標頭
+    png_hdr = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 16, 16)
+    dims = FacebookPhotoExtractor.get_image_dimensions(png_hdr)
+    assert dims == (16, 16)

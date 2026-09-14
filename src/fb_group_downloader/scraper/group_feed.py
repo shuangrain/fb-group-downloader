@@ -189,7 +189,8 @@ class GroupFeedScraper:
                         const imgElems = Array.from(article.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
                         for (const img of imgElems) {
                             const src = getBestImgSrc(img);
-                            if (img.naturalWidth > 150 || img.naturalHeight > 150 || (!img.naturalWidth && !src.includes('emoji.php') && !src.includes('rsrc.php'))) {
+                            const isUiAsset = src.includes('emoji.php') || src.includes('rsrc.php') || src.includes('static.xx.fbcdn.net') || src.includes('static.facebook.com') || src.includes('favicon') || src.includes('/assets/');
+                            if (!isUiAsset && (img.naturalWidth > 120 || img.naturalHeight > 120 || (!img.naturalWidth && !src.includes('/16/') && !src.includes('/24/') && !src.includes('/32/')))) {
                                 const parentLink = img.closest('a');
                                 const photoViewerUrl = parentLink ? parentLink.href : "";
                                 images.push({
@@ -297,6 +298,8 @@ class GroupFeedScraper:
                 if self.config.download_images:
                     for idx, img_info in enumerate(p_data.get("images", [])):
                         img_src = img_info.get("src")
+                        if not img_src or FacebookPhotoExtractor.is_icon_or_ui_asset(img_src):
+                            continue
                         photo_url = img_info.get("photoUrl", "")
                         media_id = self._extract_photo_id(photo_url) or f"{post_id}_img_{idx + 1}"
 

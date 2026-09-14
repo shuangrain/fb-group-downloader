@@ -222,16 +222,30 @@ class Database:
                             )
                             conn.commit()
                             return False
-                    # 2. 若為圖片且網址屬於縮圖標記（或檔案過小且帶有縮圖參數），自動刪除舊檔案與記錄，觸發以高畫質原圖取代
+                    # 2. 若為圖片，檢查是否為 UI 圖示/Emoji、縮圖標記或過小檔案
                     if media_type == "image":
                         p = self._resolve_local_path(local_path)
-                        if FacebookPhotoExtractor.is_thumbnail_url(orig_url) or (
+                        is_ui_icon = FacebookPhotoExtractor.is_icon_or_ui_asset(orig_url)
+                        is_tiny_icon = False
+                        if p and p.exists() and p.stat().st_size < 10240:
+                            try:
+                                with open(p, "rb") as f:
+                                    dims = FacebookPhotoExtractor.get_image_dimensions(f.read(1024))
+                                    if dims and (dims[0] < 120 or dims[1] < 120):
+                                        is_tiny_icon = True
+                            except Exception:
+                                pass
+
+                        is_thumb = FacebookPhotoExtractor.is_thumbnail_url(orig_url) or (
                             file_size < 100 * 1024
                             and ("ctp=s" in orig_url or "/s526x296/" in orig_url or "/p720x720/" in orig_url)
-                        ):
+                        )
+
+                        if is_ui_icon or is_tiny_icon or is_thumb:
                             actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            reason = "UI 圖示/Emoji" if (is_ui_icon or is_tiny_icon) else "低畫質縮圖"
                             logger.warning(
-                                f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or orig_url}"
+                                f"[清理/修復] 偵測到{reason} ({actual_size} bytes)，清除舊檔以維持相簿純淨：{local_path or orig_url}"
                             )
                             if p and p.exists():
                                 p.unlink(missing_ok=True)
@@ -265,15 +279,29 @@ class Database:
                             return False
                     if media_type == "image":
                         p = self._resolve_local_path(local_path)
-                        if FacebookPhotoExtractor.is_thumbnail_url(original_url) or (
+                        is_ui_icon = FacebookPhotoExtractor.is_icon_or_ui_asset(original_url)
+                        is_tiny_icon = False
+                        if p and p.exists() and p.stat().st_size < 10240:
+                            try:
+                                with open(p, "rb") as f:
+                                    dims = FacebookPhotoExtractor.get_image_dimensions(f.read(1024))
+                                    if dims and (dims[0] < 120 or dims[1] < 120):
+                                        is_tiny_icon = True
+                            except Exception:
+                                pass
+
+                        is_thumb = FacebookPhotoExtractor.is_thumbnail_url(original_url) or (
                             file_size < 100 * 1024
                             and (
                                 "ctp=s" in original_url or "/s526x296/" in original_url or "/p720x720/" in original_url
                             )
-                        ):
+                        )
+
+                        if is_ui_icon or is_tiny_icon or is_thumb:
                             actual_size = p.stat().st_size if (p and p.exists()) else file_size
+                            reason = "UI 圖示/Emoji" if (is_ui_icon or is_tiny_icon) else "低畫質縮圖"
                             logger.warning(
-                                f"[畫質升級/修復] 偵測到低畫質縮圖 ({actual_size} bytes)，清除舊檔以重新抓取高解析度原圖：{local_path or original_url}"
+                                f"[清理/修復] 偵測到{reason} ({actual_size} bytes)，清除舊檔以維持相簿純淨：{local_path or original_url}"
                             )
                             if p and p.exists():
                                 p.unlink(missing_ok=True)
@@ -293,7 +321,7 @@ class Database:
             return False
 
     def cleanup_corrupted_and_low_res_records(self, group_id: str | None = None) -> tuple[int, int]:
-        """清除歷史資料庫中損毀的影片分片/缺少畫面之影片與低解析度縮圖，使後續能下載完整高畫質內容"""
+        """清除歷史資料庫中損毀的影片分片/缺少畫面之影片與低解析度縮圖/UI圖示，使後續能下載完整高畫質內容"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             v_filter = " AND group_id = ?" if group_id else ""
@@ -318,9 +346,17 @@ class Database:
                 cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
             v_deleted = len(v_to_delete)
 
-            # 刪除低解析度圖片
+            # 刪除低解析度圖片、UI 圖示與 Emoji
             cursor.execute(
-                f"SELECT id, local_filepath FROM downloads WHERE media_type = 'image' AND file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'){v_filter}",
+                f"""SELECT id, local_filepath FROM downloads
+                    WHERE media_type = 'image' AND (
+                        original_url LIKE '%emoji.php%' OR
+                        original_url LIKE '%rsrc.php%' OR
+                        original_url LIKE '%static.xx.fbcdn%' OR
+                        original_url LIKE '%static.facebook.com%' OR
+                        file_size < 3000 OR
+                        (file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'))
+                    ){v_filter}""",
                 params,
             )
             img_rows = cursor.fetchall()

@@ -147,13 +147,26 @@ class GroupMediaScraper:
                         };
 
                         const imgs = Array.from(document.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
-                        return imgs.map(img => {
+                        const validPhotos = [];
+                        for (const img of imgs) {
+                            const src = getBestImgSrc(img);
+                            if (!src) continue;
+                            // 排除 Emoji 與靜態 UI 資源
+                            if (src.includes('emoji.php') || src.includes('rsrc.php') || src.includes('static.xx.fbcdn.net') || src.includes('static.facebook.com')) {
+                                continue;
+                            }
+                            // 排除小於 120px 的前端按鈕/頭貼/圖示
+                            if ((img.naturalWidth && img.naturalWidth < 120) || (img.naturalHeight && img.naturalHeight < 120)) {
+                                continue;
+                            }
                             const parent = img.closest('a');
-                            return {
-                                src: getBestImgSrc(img),
-                                photoUrl: parent ? parent.href : ""
-                            };
-                        });
+                            const photoUrl = parent ? parent.href : "";
+                            validPhotos.push({
+                                src: src,
+                                photoUrl: photoUrl
+                            });
+                        }
+                        return validPhotos;
                     }"""
                 )
 
@@ -161,6 +174,8 @@ class GroupMediaScraper:
                     src = p.get("src")
                     photo_page_url = p.get("photoUrl", "")
                     if not src or src in photo_urls_seen:
+                        continue
+                    if FacebookPhotoExtractor.is_icon_or_ui_asset(src):
                         continue
                     photo_urls_seen.add(src)
                     photo_id = self._extract_photo_id(photo_page_url) or f"img_{len(media_items) + 1}"

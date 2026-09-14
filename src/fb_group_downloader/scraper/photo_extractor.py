@@ -44,6 +44,68 @@ class FacebookPhotoExtractor:
         return False
 
     @staticmethod
+    def is_icon_or_ui_asset(url: str) -> bool:
+        """判斷圖片網址是否為 Facebook 前端 UI 圖示、Emoji 或靜態小圖"""
+        if not url:
+            return True
+        low_url = url.lower()
+        if (
+            "emoji.php" in low_url
+            or "rsrc.php" in low_url
+            or "static.xx.fbcdn.net" in low_url
+            or "static.facebook.com" in low_url
+            or "/rsrc.php/" in low_url
+            or "/assets/" in low_url
+            or "favicon" in low_url
+            or "/badges/" in low_url
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def get_image_dimensions(data: bytes) -> tuple[int, int] | None:
+        """從圖片二進制資料快速讀取 (width, height)，支援 PNG, JPEG, GIF"""
+        if not data or len(data) < 24:
+            return None
+        import struct
+
+        # PNG: IHDR 位於第 16-24 bytes
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            try:
+                w, h = struct.unpack(">II", data[16:24])
+                return w, h
+            except Exception:
+                return None
+
+        # GIF: 第 6-10 bytes
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            try:
+                w, h = struct.unpack("<HH", data[6:10])
+                return w, h
+            except Exception:
+                return None
+
+        # JPEG: 尋找 SOF0/SOF2 標記
+        if data[:2] == b"\xff\xd8":
+            try:
+                idx = 2
+                while idx < len(data) - 9:
+                    if data[idx] == 0xFF:
+                        marker = data[idx + 1]
+                        if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                            h, w = struct.unpack(">HH", data[idx + 5 : idx + 9])
+                            return w, h
+                        elif marker not in (0xD8, 0xD9):
+                            length = struct.unpack(">H", data[idx + 2 : idx + 4])[0]
+                            idx += 2 + length
+                            continue
+                    idx += 1
+            except Exception:
+                return None
+
+        return None
+
+    @staticmethod
     def _clean_stream_url(raw_url: str) -> str:
         """還原與解碼 Facebook 內嵌 JSON 中的 escaped URL"""
         if not raw_url:

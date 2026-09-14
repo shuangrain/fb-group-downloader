@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from fb_group_downloader.downloader.models import DownloadRecord, MediaItem, MediaType
+from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.utils.http import create_async_client
 from fb_group_downloader.utils.logger import get_logger
 
@@ -30,6 +31,11 @@ class ImageDownloader:
         output_dir = target_dir or (self.default_storage_dir / item.group_id / "images")
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # 下載前過濾已知的 UI 圖示/Emoji 網址
+        if FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url):
+            logger.debug(f"跳過 UI 圖示/Emoji：{item.source_url[:80]}...")
+            return None
+
         req_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -50,6 +56,14 @@ class ImageDownloader:
                 content = resp.content
                 if not content:
                     logger.warning(f"圖片內容為空：{item.source_url[:80]}...")
+                    return None
+
+                # 尺寸檢查：若解析出寬高小於 120px，或檔案小於 5KB 且為 UI 資源，判定為 UI 小圖/Emoji，跳過不儲存
+                dims = FacebookPhotoExtractor.get_image_dimensions(content)
+                if (dims and (dims[0] < 120 or dims[1] < 120)) or (
+                    len(content) < 5120 and FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url)
+                ):
+                    logger.debug(f"跳過 UI 小圖/圖示 ({dims or f'{len(content)}B'})：{item.source_url[:80]}...")
                     return None
 
                 # 計算 SHA256 雜湊
