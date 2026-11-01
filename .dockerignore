@@ -11,6 +11,11 @@ build/
 .git/
 .gitignore
 downloads/
+logs/
+browser_data/
+.ruff_cache/
 session.json
+*.session.json
+config.yaml
 .agents/
 skills-lock.json

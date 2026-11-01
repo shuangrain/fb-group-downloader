@@ -207,8 +207,12 @@ uv run fb-downloader login
 
 ### 2. 使用 Docker Compose 快速啟動常駐背景服務
 ```bash
-# 建置映像檔並在背景啟動守護程式（自動使用當前使用者的 UID/GID，避免檔案寫入權限問題）
+# 直接拉取 GitHub Container Registry (GHCR) 自動建置的最新映像檔並啟動
+docker compose pull
 docker compose up -d
+
+# 或者在本機自行建置映像檔並啟動（自動使用當前使用者的 UID/GID，避免檔案寫入權限問題）
+docker compose up -d --build
 
 # 查看即時同步紀錄
 docker compose logs -f

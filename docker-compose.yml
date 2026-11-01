@@ -8,7 +8,7 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
-    image: fb-group-downloader:latest
+    image: ghcr.io/shuangrain/fb-group-downloader:latest
     container_name: fb-group-downloader
     restart: unless-stopped
     # 以主機目前使用者的 UID / GID 執行
