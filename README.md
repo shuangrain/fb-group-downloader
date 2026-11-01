@@ -102,6 +102,7 @@ uv run fb-downloader init-config
 ```yaml
 storage_dir: "./downloads"
 session_file: "./session.json"
+user_data_dir: "./browser_data" # 持久化瀏覽器設定檔目錄（保留 IndexedDB 與受信任裝置狀態，自動展延 Session）
 headless: true # 爬蟲執行時隱藏瀏覽器視窗
 browser_timeout_sec: 60
 scroll_delay_range:
@@ -185,7 +186,8 @@ uv run fb-downloader status
 | 指令 | 說明 |
 | :--- | :--- |
 | `fb-downloader init-config` | 建立 `config.yaml` 設定檔範本 |
-| `fb-downloader login` | 開啟可視化視窗登入 Facebook 並儲存 Session |
+| `fb-downloader login` | 開啟可視化視窗登入 Facebook 並儲存 Session 與持久化設定檔 |
+| `fb-downloader refresh-session` | 在背景無頭模式下連線 Facebook 自動展延並刷新 `session.json` |
 | `fb-downloader import-cookies <file>` | 從 Cookie-Editor JSON 檔案匯入 Session Cookies |
 | `fb-downloader sync [--debug]` | 執行單次增量抓取與下載（可加 `--group-id` 與 `--debug` 印出原始 HTTP 封包） |
 | `fb-downloader daemon [--debug]` | 啟動常駐排程守護程式，自動定時同步 |

@@ -5,6 +5,7 @@ session.json
 *.session.json
 cookies.json
 *cookie*.json
+browser_data/
 .env
 .env.*
 !.env.example

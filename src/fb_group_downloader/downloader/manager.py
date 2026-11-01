@@ -197,8 +197,8 @@ class DownloadManager:
         recovered: list[DownloadRecord] = []
 
         for item in pending_items:
-            # 檢查是否已下載過
-            if self.db.is_downloaded(group_id=item.group_id, original_url=item.source_url):
+            # 檢查是否已下載過 (優先以 media_id 與 URL 雙重檢查)
+            if self.db.is_downloaded(group_id=item.group_id, media_id=item.media_id, original_url=item.source_url):
                 continue
 
             rec: DownloadRecord | None = None

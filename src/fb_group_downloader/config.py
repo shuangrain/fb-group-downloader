@@ -61,6 +61,10 @@ class AppConfig(BaseSettings):
 
     storage_dir: Path = Field(default=Path("./downloads"), description="下載檔案與資料庫儲存目錄")
     session_file: Path = Field(default=Path("./session.json"), description="Facebook 登入 Session / Cookies 儲存路徑")
+    user_data_dir: Path | None = Field(
+        default=Path("./browser_data"),
+        description="Playwright 持久化瀏覽器設定檔目錄（保留 IndexedDB、快取與裝置信任狀態，避免頻繁重新登入）",
+    )
     headless: bool = Field(default=True, description="爬蟲執行時是否使用無頭模式 (Headless)")
     browser_timeout_sec: int = Field(default=60, description="瀏覽器請求超時時間 (秒)")
     scroll_delay_range: tuple[float, float] = Field(default=(1.5, 3.5), description="捲動頁面隨機延遲區間 (秒)")

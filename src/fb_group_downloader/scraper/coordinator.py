@@ -18,7 +18,11 @@ class SyncCoordinator:
     def __init__(self, config: AppConfig, db: Database):
         self.config = config
         self.db = db
-        self.session_mgr = SessionManager(config.session_file)
+        self.session_mgr = SessionManager(
+            session_file=config.session_file,
+            user_data_dir=config.user_data_dir,
+            user_agent=config.user_agent,
+        )
 
     async def run_sync_for_group(
         self, base_scraper: BaseScraper, download_mgr: DownloadManager, group_cfg: GroupConfig
@@ -56,6 +60,10 @@ class SyncCoordinator:
                 if feed_scraper.seen_post_ids:
                     newest_post_id = next(iter(feed_scraper.seen_post_ids))
 
+                # 掃描後立即將 Facebook 輪替更新後的 Cookies 回存至 session.json 並同步給下載器
+                await base_scraper.save_session()
+                download_mgr.cookies = await base_scraper.get_cookies_dict()
+
                 logger.info(f"開始處理 {len(post_bundles)} 篇貼文的媒體下載與獨立資料夾歸檔...")
                 for post_bundle in post_bundles:
                     recs = await download_mgr.process_post(post_bundle)
@@ -65,6 +73,8 @@ class SyncCoordinator:
             if group_cfg.scan_media_tab:
                 media_scraper = GroupMediaScraper(base_scraper, group_cfg)
                 album_bundles = await media_scraper.scan_albums(page)
+                await base_scraper.save_session()
+                download_mgr.cookies = await base_scraper.get_cookies_dict()
                 logger.info(f"開始處理 {len(album_bundles)} 本相簿的相片下載與獨立資料夾歸檔...")
                 for album_bundle in album_bundles:
                     recs = await download_mgr.process_album(album_bundle)
@@ -74,6 +84,8 @@ class SyncCoordinator:
             if group_cfg.scan_files_tab:
                 files_scraper = GroupFilesScraper(base_scraper, group_cfg)
                 tab_file_items = await files_scraper.scan_files(page)
+                await base_scraper.save_session()
+                download_mgr.cookies = await base_scraper.get_cookies_dict()
                 recs = await download_mgr.process_standalone_files(tab_file_items)
                 group_downloaded.extend(recs)
 
@@ -88,6 +100,7 @@ class SyncCoordinator:
             logger.error(f"同步社團 {group_id} 時發生未預期錯誤：{e}", exc_info=True)
             self.db.update_sync_state(group_id=group_id, status="error")
         finally:
+            await base_scraper.save_session()
             await page.close()
 
         return group_downloaded
@@ -102,6 +115,7 @@ class SyncCoordinator:
 
         try:
             await base_scraper.initialize()
+            download_mgr.cookies = await base_scraper.get_cookies_dict()
 
             # 決定要執行的社團
             groups_to_sync = (

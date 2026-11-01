@@ -19,8 +19,10 @@ services:
     volumes:
       # 掛載設定檔
       - ./config.yaml:/app/config.yaml:ro
-      # 掛載 Facebook Session 認證檔案
-      - ./session.json:/app/session.json:ro
+      # 掛載 Facebook Session 認證檔案（移除 :ro 以支援自動輪替回存）
+      - ./session.json:/app/session.json
+      # 掛載持久化瀏覽器設定檔目錄（保留 IndexedDB 與受信任裝置狀態）
+      - ./browser_data:/app/browser_data
       # 掛載下載目錄與 SQLite 資料庫
       - ./downloads:/app/downloads
       # 掛載日誌輸出目錄

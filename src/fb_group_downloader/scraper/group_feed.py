@@ -130,6 +130,13 @@ class GroupFeedScraper:
         await asyncio.sleep(3)
         await self.base.close_dialogs(page)
 
+        if not await self.base.check_session_valid(page):
+            logger.error(
+                f"⚠️ 偵測到 Facebook Session 已失效或被導向登入頁面 ({page.url})！"
+                "請執行 'uv run fb-downloader login' 重新驗證。"
+            )
+            return []
+
         extracted_bundles: list[PostBundle] = []
         consecutive_no_new_posts = 0
         max_posts = self.config.max_posts_per_scan

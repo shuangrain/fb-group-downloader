@@ -9,6 +9,7 @@ from fb_group_downloader.auth.session import SessionManager
 from fb_group_downloader.config import load_or_create_config
 from fb_group_downloader.db import Database
 from fb_group_downloader.scheduler.runner import SchedulerDaemon
+from fb_group_downloader.scraper.base import BaseScraper
 from fb_group_downloader.scraper.coordinator import SyncCoordinator
 from fb_group_downloader.utils.logger import console, setup_logger
 
@@ -42,14 +43,39 @@ def login(
     session_file: Path | None = typer.Option(None, "--session", "-s", help="自訂 Session 儲存路徑"),
     timeout: int = typer.Option(300, "--timeout", "-t", help="登入逾時時間（秒）"),
 ):
-    """開啟瀏覽器視窗進行 Facebook 登入並保存 Session Cookies"""
+    """開啟瀏覽器視窗進行 Facebook 登入並保存 Session Cookies 與持久化設定檔"""
     cfg = load_or_create_config(config_path)
     setup_logger(log_config=cfg.logging)
     target_session = session_file or cfg.session_file
 
-    session_mgr = SessionManager(target_session)
+    session_mgr = SessionManager(
+        session_file=target_session,
+        user_data_dir=cfg.user_data_dir,
+        user_agent=cfg.user_agent,
+    )
     success = session_mgr.interactive_login(timeout_sec=timeout)
     if not success:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def refresh_session(
+    config_path: Path | None = typer.Option(None, "--config", "-c", help="設定檔路徑 (預設: ./config.yaml)"),
+    debug: bool = typer.Option(False, "--debug", "-d", help="啟用除錯紀錄"),
+):
+    """在背景透過持久化瀏覽器自動連線 Facebook 展延並刷新 session.json（免手動登入）"""
+    cfg = load_or_create_config(config_path)
+    setup_logger(log_config=cfg.logging, debug=debug)
+
+    scraper = BaseScraper(cfg)
+    success = asyncio.run(scraper.refresh_session())
+    if success:
+        console.print(
+            f"[bold green]✓ Session 刷新成功！已同步更新 {cfg.session_file}"
+            f"{f' 與持久化目錄 {cfg.user_data_dir}' if cfg.user_data_dir else ''}[/bold green]"
+        )
+    else:
+        console.print("[bold red]✗ Session 已失效或無法自動刷新，請執行 'fb-downloader login' 重新登入。[/bold red]")
         raise typer.Exit(code=1)
 
 

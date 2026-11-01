@@ -6,6 +6,9 @@ storage_dir: "./downloads"
 # Facebook 登入 Session / Cookies 儲存路徑
 session_file: "./session.json"
 
+# Playwright 持久化瀏覽器設定檔目錄（保留 IndexedDB、快取與裝置信任狀態，避免頻繁重新登入）
+user_data_dir: "./browser_data"
+
 # 爬蟲執行時是否使用無頭模式 (建議正式排程時設為 true)
 headless: true
 

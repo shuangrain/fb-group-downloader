@@ -43,14 +43,14 @@ RUN uv pip install --no-cache -e .
 RUN playwright install --with-deps chromium
 
 # 建立下載與資料儲存目錄，並將所有權指派給當前使用者 (UID:GID)
-RUN mkdir -p /app/downloads /app/logs /ms-playwright /home/appuser \
+RUN mkdir -p /app/downloads /app/logs /app/browser_data /ms-playwright /home/appuser \
     && chown -R ${UID}:${GID} /app /ms-playwright /home/appuser
 
 # 切換為非 root 使用者執行
 USER ${UID}:${GID}
 
 # 宣告掛載點
-VOLUME ["/app/downloads", "/app/logs"]
+VOLUME ["/app/downloads", "/app/logs", "/app/browser_data"]
 
 # 設定 Entrypoint 為 fb-downloader 命令
 ENTRYPOINT ["fb-downloader"]
