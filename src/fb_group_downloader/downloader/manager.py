@@ -13,6 +13,7 @@ from fb_group_downloader.downloader.models import (
     PostBundle,
 )
 from fb_group_downloader.downloader.video import VideoDownloader
+from fb_group_downloader.scraper.photo_extractor import FacebookPhotoExtractor
 from fb_group_downloader.utils.logger import get_logger
 
 logger = get_logger()
@@ -72,11 +73,12 @@ class DownloadManager:
         if not post_bundle.media_items:
             return []
 
-        # 檢查是否有尚未下載的項目
+        # 檢查是否有尚未下載的項目（同時過濾已知的 UI 圖示/Emoji）
         items_to_download = [
             item
             for item in post_bundle.media_items
-            if not self.db.is_downloaded(
+            if not (item.media_type == MediaType.IMAGE and FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url))
+            and not self.db.is_downloaded(
                 group_id=item.group_id,
                 media_id=item.media_id,
                 original_url=item.source_url,
@@ -106,20 +108,22 @@ class DownloadManager:
                 rec = await self.image_downloader.download(
                     item, target_dir=post_dir, index=img_idx, cookies=self.cookies
                 )
-                img_idx += 1
+                if rec:
+                    img_idx += 1
             elif item.media_type == MediaType.VIDEO:
                 rec = await self.video_downloader.download(
                     item, target_dir=post_dir, index=vid_idx, cookies=self.cookies
                 )
-                vid_idx += 1
+                if rec:
+                    vid_idx += 1
             elif item.media_type == MediaType.FILE:
                 rec = await self.file_downloader.download(item, target_dir=post_dir, cookies=self.cookies)
 
             if rec:
                 self.db.add_record(rec)
                 results.append(rec)
-            else:
-                # 下載失敗時，寫入失敗重試資料表
+            elif not item.skipped_as_icon:
+                # 僅在非 UI 圖示且下載失敗時，寫入失敗重試資料表
                 self.db.record_failure(item, error_msg="Download failed", target_dir=str(post_dir.resolve()))
 
         return results
@@ -134,7 +138,8 @@ class DownloadManager:
         items_to_download = [
             item
             for item in album_bundle.media_items
-            if not self.db.is_downloaded(
+            if not (item.media_type == MediaType.IMAGE and FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url))
+            and not self.db.is_downloaded(
                 group_id=item.group_id,
                 media_id=item.media_id,
                 original_url=item.source_url,
@@ -160,7 +165,7 @@ class DownloadManager:
             if rec:
                 self.db.add_record(rec)
                 results.append(rec)
-            else:
+            elif not item.skipped_as_icon:
                 self.db.record_failure(
                     item, error_msg="Album image download failed", target_dir=str(album_dir.resolve())
                 )
@@ -187,7 +192,7 @@ class DownloadManager:
                 self.db.record_failure(item, error_msg="File download failed", target_dir=str(target_dir.resolve()))
         return results
 
-    async def retry_pending_failures(self, group_id: str) -> list[DownloadRecord]:
+    async def retry_pending_failures(self, group_id: str, group_name: str | None = None) -> list[DownloadRecord]:
         """自動重試特定社團先前下載失敗的所有項目"""
         pending_items = self.db.get_pending_failures(group_id)
         if not pending_items:
@@ -197,23 +202,35 @@ class DownloadManager:
         recovered: list[DownloadRecord] = []
 
         for item in pending_items:
+            if group_name and not item.group_name:
+                item.group_name = group_name
+
+            if item.media_type == MediaType.IMAGE and FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url):
+                continue
+
             # 檢查是否已下載過 (優先以 media_id 與 URL 雙重檢查)
             if self.db.is_downloaded(group_id=item.group_id, media_id=item.media_id, original_url=item.source_url):
                 continue
 
+            resolved_target_dir = self.db._resolve_local_path(item.target_dir) if item.target_dir else None
+
             rec: DownloadRecord | None = None
             if item.media_type == MediaType.IMAGE:
-                rec = await self.image_downloader.download(item, cookies=self.cookies)
+                rec = await self.image_downloader.download(item, target_dir=resolved_target_dir, cookies=self.cookies)
             elif item.media_type == MediaType.VIDEO:
-                rec = await self.video_downloader.download(item, cookies=self.cookies)
+                rec = await self.video_downloader.download(item, target_dir=resolved_target_dir, cookies=self.cookies)
             elif item.media_type == MediaType.FILE:
-                rec = await self.file_downloader.download(item, cookies=self.cookies)
+                rec = await self.file_downloader.download(item, target_dir=resolved_target_dir, cookies=self.cookies)
 
             if rec:
                 self.db.add_record(rec)
                 recovered.append(rec)
                 logger.info(f"🎉 重試下載成功：{rec.local_filepath}")
-            else:
-                self.db.record_failure(item, error_msg="Retry failed")
+            elif not item.skipped_as_icon:
+                self.db.record_failure(
+                    item,
+                    error_msg="Retry failed",
+                    target_dir=str(resolved_target_dir) if resolved_target_dir else item.target_dir,
+                )
 
         return recovered

@@ -63,8 +63,7 @@ class FileDownloader:
         headers: dict | None = None,
     ) -> DownloadRecord | None:
         """下載檔案/附件至指定資料夾"""
-        output_dir = target_dir or (self.default_storage_dir / item.group_id / "files")
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = target_dir or (self.default_storage_dir / item.get_group_folder_name() / "files")
 
         req_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -131,6 +130,7 @@ class FileDownloader:
                         clean_filename = f"{stem}_{ts}{suffix}"
                         file_path = output_dir / clean_filename
 
+                output_dir.mkdir(parents=True, exist_ok=True)
                 with open(file_path, "wb") as f:
                     f.write(content)
 

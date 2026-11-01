@@ -30,13 +30,53 @@ class Database:
             return p
         if local_path.startswith("/app/downloads/"):
             rel_p = Path(local_path[len("/app/") :])
-            if rel_p.exists():
+            if rel_p.exists() or not Path("/app/downloads").exists():
                 return rel_p
         elif local_path.startswith("downloads/"):
             app_p = Path("/app") / local_path
             if app_p.exists():
                 return app_p
         return p
+
+    def _remove_file_and_empty_parents(self, p: Path | None) -> None:
+        """刪除檔案，並向上遞迴移除已變空的父層資料夾（直到儲存根目錄為止）"""
+        if not p:
+            return
+        if p.exists():
+            p.unlink(missing_ok=True)
+        stop_dir = self.db_path.parent.resolve()
+        curr = p.parent
+        while curr.exists():
+            try:
+                if curr.resolve() == stop_dir:
+                    break
+                if not any(curr.iterdir()):
+                    curr.rmdir()
+                    curr = curr.parent
+                else:
+                    break
+            except Exception:
+                break
+
+    def cleanup_empty_dirs(self) -> int:
+        """清理儲存目錄下殘留的空資料夾（由下而上移除）"""
+        root_dir = self.db_path.parent
+        if not root_dir.exists():
+            return 0
+        removed = 0
+        all_dirs = sorted(
+            (d for d in root_dir.rglob("*") if d.is_dir()),
+            key=lambda x: len(x.parts),
+            reverse=True,
+        )
+        for d in all_dirs:
+            try:
+                if d.exists() and not any(d.iterdir()):
+                    d.rmdir()
+                    removed += 1
+            except Exception:
+                pass
+        return removed
 
     @staticmethod
     def is_valid_video_file(file_path: Path | str | None, original_url: str | None = None) -> bool:
@@ -215,8 +255,7 @@ class Database:
                             logger.warning(
                                 f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面/聲音之影片 ({actual_size} bytes)，清除舊檔以重新下載完整影片：{local_path or media_id}"
                             )
-                            if p and p.exists():
-                                p.unlink(missing_ok=True)
+                            self._remove_file_and_empty_parents(p)
                             cursor.execute(
                                 "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
                             )
@@ -247,8 +286,7 @@ class Database:
                             logger.warning(
                                 f"[清理/修復] 偵測到{reason} ({actual_size} bytes)，清除舊檔以維持相簿純淨：{local_path or orig_url}"
                             )
-                            if p and p.exists():
-                                p.unlink(missing_ok=True)
+                            self._remove_file_and_empty_parents(p)
                             cursor.execute(
                                 "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
                             )
@@ -272,8 +310,7 @@ class Database:
                             logger.warning(
                                 f"[畫質升級/修復] 偵測到歷史損毀或缺少畫面/聲音之影片 ({actual_size} bytes)，清除舊檔以重新下載完整影片：{local_path or original_url}"
                             )
-                            if p and p.exists():
-                                p.unlink(missing_ok=True)
+                            self._remove_file_and_empty_parents(p)
                             cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
                             conn.commit()
                             return False
@@ -303,8 +340,7 @@ class Database:
                             logger.warning(
                                 f"[清理/修復] 偵測到{reason} ({actual_size} bytes)，清除舊檔以維持相簿純淨：{local_path or original_url}"
                             )
-                            if p and p.exists():
-                                p.unlink(missing_ok=True)
+                            self._remove_file_and_empty_parents(p)
                             cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
                             conn.commit()
                             return False
@@ -339,8 +375,7 @@ class Database:
                 is_chunk = "bytestart=" in (orig_url or "")
                 if is_chunk or not p or not p.exists() or not self.is_valid_video_file(p, orig_url):
                     v_to_delete.append(rec_id)
-                    if p and p.exists():
-                        p.unlink(missing_ok=True)
+                    self._remove_file_and_empty_parents(p)
 
             for rec_id in v_to_delete:
                 cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
@@ -354,6 +389,7 @@ class Database:
                         original_url LIKE '%rsrc.php%' OR
                         original_url LIKE '%static.xx.fbcdn%' OR
                         original_url LIKE '%static.facebook.com%' OR
+                        original_url LIKE '%/hads-ak%' OR
                         file_size < 3000 OR
                         (file_size < 80000 AND (original_url LIKE '%ctp=s%' OR original_url LIKE '%/s526x296/%' OR original_url LIKE '%/p720x720/%'))
                     ){v_filter}""",
@@ -364,14 +400,27 @@ class Database:
             for rec_id, path_str in img_rows:
                 img_to_delete.append(rec_id)
                 p = self._resolve_local_path(path_str)
-                if p and p.exists():
-                    p.unlink(missing_ok=True)
+                self._remove_file_and_empty_parents(p)
 
             for rec_id in img_to_delete:
                 cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
             img_deleted = len(img_to_delete)
 
+            # 同步清理 download_failures 中誤記的 UI 圖示與 Emoji
+            cursor.execute(
+                f"""DELETE FROM download_failures
+                    WHERE (
+                        original_url LIKE '%emoji.php%' OR
+                        original_url LIKE '%rsrc.php%' OR
+                        original_url LIKE '%static.xx.fbcdn%' OR
+                        original_url LIKE '%static.facebook.com%' OR
+                        original_url LIKE '%/hads-ak%'
+                    ){v_filter}""",
+                params,
+            )
+
             conn.commit()
+            self.cleanup_empty_dirs()
             return v_deleted, img_deleted
 
     def add_record(self, record: DownloadRecord) -> int:
@@ -437,6 +486,8 @@ class Database:
     ) -> None:
         """記錄下載失敗的項目，以便下次同步時自動重新嘗試"""
         now = datetime.utcnow().isoformat()
+        if target_dir:
+            item.target_dir = target_dir
         item_json = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
         media_type_str = item.media_type.value if isinstance(item.media_type, MediaType) else str(item.media_type)
 
@@ -453,6 +504,7 @@ class Database:
                     retry_count = retry_count + 1,
                     error_msg = excluded.error_msg,
                     last_failed_at = excluded.last_failed_at,
+                    folder_path = COALESCE(excluded.folder_path, download_failures.folder_path),
                     item_json = excluded.item_json
                 """,
                 (
@@ -462,7 +514,7 @@ class Database:
                     media_type_str,
                     item.post_id,
                     item.album_id,
-                    target_dir,
+                    target_dir or item.target_dir,
                     item_json,
                     error_msg,
                     now,
@@ -476,7 +528,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT item_json FROM download_failures
+                SELECT item_json, folder_path FROM download_failures
                 WHERE group_id = ? AND retry_count <= ?
                 ORDER BY last_failed_at ASC
                 """,
@@ -487,6 +539,8 @@ class Database:
             for r in rows:
                 try:
                     data = json.loads(r["item_json"])
+                    if r["folder_path"] and not data.get("target_dir"):
+                        data["target_dir"] = r["folder_path"]
                     items.append(MediaItem(**data))
                 except Exception:
                     pass

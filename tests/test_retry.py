@@ -15,16 +15,28 @@ def test_database_failure_recording_and_recovery(tmp_path: Path):
         media_id="img_001",
     )
 
-    # 1. 記錄失敗
-    db.record_failure(item, error_msg="HTTP 500 Internal Error")
+    # 1. 記錄失敗（含 target_dir）
+    expected_dir = str(tmp_path / "測試社團" / "posts" / "20260831 貼文")
+    db.record_failure(item, error_msg="HTTP 500 Internal Error", target_dir=expected_dir)
     pending = db.get_pending_failures("12345")
     assert len(pending) == 1
     assert pending[0].source_url == "https://example.com/failed.jpg"
+    assert pending[0].target_dir == expected_dir
 
-    # 2. 再次失敗增加 retry_count
+    # 2. 再次失敗增加 retry_count（未傳 target_dir 時亦應保留原 folder_path）
     db.record_failure(item, error_msg="HTTP 502 Bad Gateway")
+    pending_retry = db.get_pending_failures("12345")
+    assert pending_retry[0].target_dir == expected_dir
     stats = db.get_stats()
     assert stats["pending_failures"] == 1
+
+    # 3. 測試空資料夾自動清理
+    empty_num_dir = tmp_path / "12345" / "images"
+    empty_num_dir.mkdir(parents=True, exist_ok=True)
+    assert empty_num_dir.exists()
+    db.cleanup_corrupted_and_low_res_records("12345")
+    assert not empty_num_dir.exists()
+    assert not (tmp_path / "12345").exists()
 
     # 3. 成功下載後自動清除失敗
     from fb_group_downloader.downloader.models import DownloadRecord

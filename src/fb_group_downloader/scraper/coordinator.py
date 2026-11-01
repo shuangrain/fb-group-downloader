@@ -45,7 +45,7 @@ class SyncCoordinator:
             logger.info(f"🧹 自動清理 {bad_v} 支無效影片碎片與 {bad_img} 張低解析縮圖，準備重新同步高畫質檔案。")
 
         # 0. 優先重試先前下載失敗的項目
-        retry_recs = await download_mgr.retry_pending_failures(group_id)
+        retry_recs = await download_mgr.retry_pending_failures(group_id, group_name=group_cfg.name)
         if retry_recs:
             group_downloaded.extend(retry_recs)
 

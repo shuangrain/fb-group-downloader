@@ -28,11 +28,11 @@ class ImageDownloader:
         headers: dict | None = None,
     ) -> DownloadRecord | None:
         """下載單張圖片至指定資料夾，計算雜湊值與檔案大小"""
-        output_dir = target_dir or (self.default_storage_dir / item.group_id / "images")
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = target_dir or (self.default_storage_dir / item.get_group_folder_name() / "images")
 
-        # 下載前過濾已知的 UI 圖示/Emoji 網址
+        # 下載前過濾已知的 UI 圖示/Emoji 網址（不提前建立資料夾）
         if FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url):
+            item.skipped_as_icon = True
             logger.debug(f"跳過 UI 圖示/Emoji：{item.source_url[:80]}...")
             return None
 
@@ -63,6 +63,7 @@ class ImageDownloader:
                 if (dims and (dims[0] < 120 or dims[1] < 120)) or (
                     len(content) < 5120 and FacebookPhotoExtractor.is_icon_or_ui_asset(item.source_url)
                 ):
+                    item.skipped_as_icon = True
                     logger.debug(f"跳過 UI 小圖/圖示 ({dims or f'{len(content)}B'})：{item.source_url[:80]}...")
                     return None
 
@@ -82,6 +83,7 @@ class ImageDownloader:
                 # 檔名命名規則：photo_{index:02d}_{media_id}{ext}
                 media_tag = self._sanitize_filename(item.media_id) if item.media_id else sha256_hash[:8]
                 filename = f"photo_{index:02d}_{media_tag}{ext}"
+                output_dir.mkdir(parents=True, exist_ok=True)
                 file_path = output_dir / filename
                 old_size = file_path.stat().st_size if file_path.exists() else 0
 

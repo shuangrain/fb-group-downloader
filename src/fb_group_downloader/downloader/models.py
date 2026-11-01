@@ -43,6 +43,10 @@ class MediaItem(BaseModel):
     album_name: str | None = None
     album_url: str | None = None
 
+    # 目標資料夾路徑與過濾標記（供失敗重試與跳過小圖示使用）
+    target_dir: str | None = None
+    skipped_as_icon: bool = False
+
     def get_group_folder_name(self) -> str:
         """取得社團外層資料夾名稱（優先使用社團名稱，否則使用 ID）"""
         if self.group_name:

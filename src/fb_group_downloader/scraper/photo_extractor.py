@@ -55,6 +55,7 @@ class FacebookPhotoExtractor:
             or "static.xx.fbcdn.net" in low_url
             or "static.facebook.com" in low_url
             or "/rsrc.php/" in low_url
+            or "/hads-ak" in low_url
             or "/assets/" in low_url
             or "favicon" in low_url
             or "/badges/" in low_url

@@ -266,7 +266,8 @@ class VideoDownloader:
         headers: dict | None = None,
     ) -> DownloadRecord | None:
         """下載影片檔案至指定資料夾，並校驗檔案完整性"""
-        output_dir = target_dir or (self.default_storage_dir / item.group_id / "videos")
+        output_dir = target_dir or (self.default_storage_dir / item.get_group_folder_name() / "videos")
+        dir_existed_before = output_dir.exists()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         media_tag = self._sanitize_filename(item.media_id) if item.media_id else f"{index:02d}"
@@ -323,6 +324,13 @@ class VideoDownloader:
         if not success or not file_path.exists() or file_path.stat().st_size < self.MIN_VALID_VIDEO_BYTES:
             if file_path.exists():
                 file_path.unlink(missing_ok=True)
+            if not dir_existed_before and output_dir.exists() and not any(output_dir.iterdir()):
+                try:
+                    output_dir.rmdir()
+                    if output_dir.parent != self.default_storage_dir and not any(output_dir.parent.iterdir()):
+                        output_dir.parent.rmdir()
+                except Exception:
+                    pass
             logger.warning(f"無法下載完整影片：{item.source_url[:80]}...（若為私密社團加密影片，已自動略過並記錄）")
             return None
 
