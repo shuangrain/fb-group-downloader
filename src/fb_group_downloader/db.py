@@ -59,11 +59,21 @@ class Database:
                 break
 
     def cleanup_empty_dirs(self) -> int:
-        """清理儲存目錄下殘留的空資料夾（由下而上移除）"""
+        """清理儲存目錄下殘留的空資料夾以及舊版無內文的『貼文_post_*』預覽資料夾"""
         root_dir = self.db_path.parent
         if not root_dir.exists():
             return 0
         removed = 0
+        # 1. 移除舊版殘留的「*貼文_post_*」無內文相簿預覽資料夾
+        for anon_dir in list(root_dir.rglob("*貼文_post_*")):
+            if anon_dir.is_dir():
+                try:
+                    shutil.rmtree(anon_dir, ignore_errors=True)
+                    removed += 1
+                except Exception:
+                    pass
+
+        # 2. 由深至淺移除所有空資料夾
         all_dirs = sorted(
             (d for d in root_dir.rglob("*") if d.is_dir()),
             key=lambda x: len(x.parts),

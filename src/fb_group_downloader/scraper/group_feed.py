@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 
 from playwright.async_api import Page, Response
@@ -260,12 +261,15 @@ class GroupFeedScraper:
                             }
                         }
 
+                        const isAlbumPost = article.querySelector('a[href*="/media/set/"], a[href*="set=oa."], a[href*="/albums/"]') !== null;
+
                         if (postUrl || images.length > 0 || videos.length > 0 || files.length > 0) {
                             results.push({
                                 postUrl: postUrl,
                                 author: author,
                                 text: text,
                                 postTimeStr: postTimeStr,
+                                isAlbumPost: isAlbumPost,
                                 images: images,
                                 videos: videos,
                                 files: files
@@ -279,11 +283,27 @@ class GroupFeedScraper:
             new_posts_found = 0
 
             for p_data in posts_data:
-                post_url = p_data.get("postUrl", "")
+                post_url = p_data.get("postUrl", "").strip()
+                author = p_data.get("author", "").strip()
+                text = p_data.get("text", "").strip()
+                is_album_post = bool(p_data.get("isAlbumPost", False))
+
+                # 忽略既無作者也無文字內文的區塊（例如相簿上傳預覽卡或動態牆非貼文容器），避免產生「貼文_post_xxxx」
+                if not author and not text:
+                    logger.debug("略過無作者且無內文的動態牆區塊（相簿預覽卡或非貼文容器）")
+                    continue
+
+                # 若已啟用相簿專區掃描 (scan_media_tab)，略過無內文的純相簿預覽貼文
+                if self.config.scan_media_tab and is_album_post and not text:
+                    logger.debug(f"略過相簿預覽貼文（已由相簿專區完整下載）：{author}")
+                    continue
+
                 post_id = self._extract_post_id(post_url) if post_url else None
 
                 if not post_id:
-                    post_id = f"post_{hash(post_url or p_data.get('text', '') or str(len(self.seen_post_ids))) & 0xFFFFFFFF:08x}"
+                    stable_key = post_url or f"{author}:{text}"
+                    digest = hashlib.md5(stable_key.encode("utf-8")).hexdigest()[:8]
+                    post_id = f"post_{digest}"
 
                 if post_id in self.seen_post_ids:
                     continue
@@ -295,8 +315,6 @@ class GroupFeedScraper:
                     logger.info(f"已抵達上次同步的貼文 (ID: {stop_at_post_id})，停止向下滾動。")
                     return extracted_bundles
 
-                author = p_data.get("author", "")
-                text = p_data.get("text", "")
                 post_time_str = p_data.get("postTimeStr", "")
                 post_time = parse_fb_date(post_time_str, reference_text=f"{author} {text}")
                 media_items: list[MediaItem] = []

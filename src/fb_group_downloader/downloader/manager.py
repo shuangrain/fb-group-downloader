@@ -89,14 +89,10 @@ class DownloadManager:
             logger.debug(f"貼文 {post_bundle.post_id} 所有媒體皆已下載過，跳過。")
             return []
 
-        # 建立貼文專屬資料夾：downloads/<group_name_or_id>/posts/yyyyMMdd <name>/
+        # 貼文專屬資料夾路徑：downloads/<group_name_or_id>/posts/yyyyMMdd <name>/
         group_folder = post_bundle.get_group_folder_name()
         folder_name = post_bundle.get_folder_name()
         post_dir = self.storage_dir / group_folder / "posts" / folder_name
-        post_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"📂 建立/使用貼文資料夾：{post_dir.parent.name}/{post_dir.name}")
-        self._save_post_metadata(post_bundle, post_dir)
 
         results: list[DownloadRecord] = []
         img_idx = 1
@@ -125,6 +121,10 @@ class DownloadManager:
             elif not item.skipped_as_icon:
                 # 僅在非 UI 圖示且下載失敗時，寫入失敗重試資料表
                 self.db.record_failure(item, error_msg="Download failed", target_dir=str(post_dir.resolve()))
+
+        if results:
+            logger.info(f"📂 已歸檔貼文資料夾：{post_dir.parent.name}/{post_dir.name}")
+            self._save_post_metadata(post_bundle, post_dir)
 
         return results
 
