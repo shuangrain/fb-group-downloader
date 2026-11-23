@@ -48,4 +48,4 @@ groups:
     scan_feed: true # 是否掃描動態貼文
     scan_files_tab: true # 是否掃描社團「檔案」分頁
     scan_media_tab: false # 是否獨立掃描社團「多媒體」分頁
-    max_posts_per_scan: 30 # 每次同步最多向下掃描貼文數量
+    max_posts_per_scan: 0 # 每次同步最多向下掃描貼文數量（0 代表不限制，掃描至上次同步進度或底部）

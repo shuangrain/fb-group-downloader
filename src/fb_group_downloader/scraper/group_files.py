@@ -76,11 +76,8 @@ class GroupFilesScraper:
 
         extracted_items: list[MediaItem] = []
         consecutive_no_new = 0
-        scroll_count = 0
-        max_scrolls = 10
 
-        while scroll_count < max_scrolls:
-            scroll_count += 1
+        while True:
 
             files_data = await page.evaluate(
                 """() => {

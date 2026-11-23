@@ -83,11 +83,11 @@ class GroupMediaScraper:
         await asyncio.sleep(3)
         await self.base.close_dialogs(page)
 
-        # 滾動相簿列表頁以載入所有歷史相簿（連續 3 次無新相簿或達上限 20 次則停止）
+        # 滾動相簿列表頁以載入所有歷史相簿（連續 3 次無新相簿載入即停止，不設硬性次數上限）
         albums_info: list[dict[str, str]] = []
         seen_list_ids: set[str] = set()
         no_new_albums = 0
-        for _ in range(20):
+        while True:
             batch = await page.evaluate(
                 r"""() => {
                     const results = [];
@@ -144,13 +144,12 @@ class GroupMediaScraper:
             await page.goto(album_url, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            # 滾動加載相簿內的圖片（持續滾動直到連續 3 次無新圖片載入，上限 50 次）
+            # 滾動加載相簿內的圖片（持續滾動直到連續 3 次無新圖片載入即停止，不設硬性次數上限）
             photo_urls_seen: set[str] = set()
             media_items: list[MediaItem] = []
             consecutive_no_new = 0
-            max_scrolls = 50
 
-            for _ in range(max_scrolls):
+            while True:
                 photos_data = await page.evaluate(
                     r"""() => {
                         const getBestImgSrc = (img) => {

@@ -18,7 +18,7 @@ class GroupConfig(BaseModel):
     scan_feed: bool = Field(True, description="是否掃描貼文動態")
     scan_files_tab: bool = Field(True, description="是否掃描社團檔案專區 (/files)")
     scan_media_tab: bool = Field(False, description="是否獨立掃描社團多媒體專區 (/media)")
-    max_posts_per_scan: int = Field(30, description="每次同步最多掃描貼文數")
+    max_posts_per_scan: int = Field(0, description="每次同步最多掃描貼文數（0 或負數代表不限制，掃描至上次同步位置或頁面底部）")
 
     @field_validator("group_id", mode="before")
     @classmethod
@@ -114,7 +114,7 @@ def load_or_create_config(path: Path | str | None = None) -> AppConfig:
                 download_files=True,
                 scan_feed=True,
                 scan_files_tab=True,
-                max_posts_per_scan=30,
+                max_posts_per_scan=0,
             )
         ]
     )

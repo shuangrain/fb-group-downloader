@@ -21,6 +21,7 @@ class GroupFeedScraper:
         self.config = group_config
         self.group_id = group_config.group_id
         self.seen_post_ids: set[str] = set()
+        self.seen_skipped_cards: set[str] = set()
         self._ts_cache: dict[str, tuple[str, str]] = {}
         self.newest_post_id: str | None = None  # 本次掃描中發布時間最新（或最先看到）的貼文 ID
         self.newest_post_time: str | None = None
@@ -173,10 +174,10 @@ class GroupFeedScraper:
         extracted_bundles: list[PostBundle] = []
         consecutive_no_new_posts = 0
         max_posts = self.config.max_posts_per_scan
+        limit_desc = f"最多掃描 {max_posts} 篇貼文" if max_posts and max_posts > 0 else "不限制篇數，掃描至上次同步進度或底部"
+        logger.info(f"開始以貼文為單位掃描（{limit_desc}）...")
 
-        logger.info(f"開始以貼文為單位掃描（最多掃描 {max_posts} 篇貼文）...")
-
-        while len(self.seen_post_ids) < max_posts:
+        while not (max_posts and max_posts > 0 and len(self.seen_post_ids) >= max_posts):
             posts_data = await page.evaluate(
                 r"""() => {
                     const getBestImgSrc = (img) => {
@@ -365,7 +366,14 @@ class GroupFeedScraper:
                     continue
 
                 # 若已啟用相簿專區掃描 (scan_media_tab)，略過無內文的純相簿預覽貼文
+                # 注意：仍需把新滾出的相簿預覽卡計入 new_posts_found，避免動態牆頂端連續多篇相簿預覽卡時提早判定為「已到底部」
                 if self.config.scan_media_tab and is_album_post and not text:
+                    imgs_list = p_data.get("images", [])
+                    first_img_key = (imgs_list[0].get("photoUrl") or imgs_list[0].get("src") or "") if imgs_list else ""
+                    card_sig = post_url or first_img_key or f"{author}:{len(imgs_list)}"
+                    if card_sig and card_sig not in self.seen_skipped_cards:
+                        self.seen_skipped_cards.add(card_sig)
+                        new_posts_found += 1
                     logger.debug(f"略過相簿預覽貼文（已由相簿專區完整下載）：{author}")
                     continue
 
