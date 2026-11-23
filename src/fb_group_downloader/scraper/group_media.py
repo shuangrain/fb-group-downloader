@@ -83,27 +83,48 @@ class GroupMediaScraper:
         await asyncio.sleep(3)
         await self.base.close_dialogs(page)
 
-        # 擷取所有相簿列表
-        albums_info = await page.evaluate(
-            r"""() => {
-                const results = [];
-                const links = Array.from(document.querySelectorAll('a[href*="/media/set/"], a[href*="/albums/"]'));
-                for (const link of links) {
-                    const href = link.href;
-                    const textElem = link.querySelector('span') || link;
-                    let title = textElem.innerText ? textElem.innerText.trim() : "";
-                    if (title && !title.includes('建立相簿') && !title.includes('Create Album') && !title.includes('相簿\n更多')) {
-                        // 清理標題，去除張數後綴（如 "8/31-9/11學習區\\n72張相片" -> "8/31-9/11學習區"）
-                        const cleanTitle = title.split('\\n')[0].trim();
-                        results.push({
-                            url: href,
-                            title: cleanTitle
-                        });
+        # 滾動相簿列表頁以載入所有歷史相簿（連續 3 次無新相簿或達上限 20 次則停止）
+        albums_info: list[dict[str, str]] = []
+        seen_list_ids: set[str] = set()
+        no_new_albums = 0
+        for _ in range(20):
+            batch = await page.evaluate(
+                r"""() => {
+                    const results = [];
+                    const links = Array.from(document.querySelectorAll('a[href*="/media/set/"], a[href*="/albums/"]'));
+                    for (const link of links) {
+                        const href = link.href;
+                        const textElem = link.querySelector('span') || link;
+                        let title = textElem.innerText ? textElem.innerText.trim() : "";
+                        if (title && !title.includes('建立相簿') && !title.includes('Create Album') && !title.includes('相簿\n更多')) {
+                            // 清理標題，去除張數後綴（如 "8/31-9/11學習區\\n72張相片" -> "8/31-9/11學習區"）
+                            const cleanTitle = title.split('\\n')[0].trim();
+                            results.push({
+                                url: href,
+                                title: cleanTitle
+                            });
+                        }
                     }
-                }
-                return results;
-            }"""
-        )
+                    return results;
+                }"""
+            )
+            added = 0
+            for item in batch:
+                u = item.get("url", "")
+                if not u or self._is_album_list_url(u):
+                    continue
+                aid = self._extract_album_id(u)
+                if aid not in seen_list_ids:
+                    seen_list_ids.add(aid)
+                    albums_info.append(item)
+                    added += 1
+            if added == 0:
+                no_new_albums += 1
+                if no_new_albums >= 3:
+                    break
+            else:
+                no_new_albums = 0
+            await self.base.human_scroll(page)
 
         album_bundles: list[AlbumBundle] = []
         logger.info(f"在相簿專區發現 {len(albums_info)} 本相簿。")

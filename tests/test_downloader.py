@@ -210,3 +210,17 @@ def test_cleanup_find_and_delete_duplicates(tmp_path: Path):
     delete_empty_duplicates(tmp_path, res)
     assert not (albums / "20260914 a").exists()
     assert (albums / "20260915 a").exists()
+
+
+def test_files_scraper_helpers():
+    from fb_group_downloader.scraper.group_files import GroupFilesScraper
+
+    assert GroupFilesScraper._is_files_tab_url("https://www.facebook.com/groups/123/files/files/")
+    assert GroupFilesScraper._is_files_tab_url("https://www.facebook.com/groups/123/files?__cft__[0]=abc")
+    assert not GroupFilesScraper._is_files_tab_url("https://www.facebook.com/groups/123/permalink/456/")
+
+    u1 = "https://www.facebook.com/groups/123/permalink/456/?__cft__[0]=aaa&__tn__=R"
+    u2 = "https://www.facebook.com/groups/123/permalink/456/?__cft__[0]=bbb"
+    assert GroupFilesScraper._clean_file_url(u1) == "https://www.facebook.com/groups/123/permalink/456/"
+    assert GroupFilesScraper._stable_file_id(u1, "a.pdf") == GroupFilesScraper._stable_file_id(u2, "a.pdf")
+    assert GroupFilesScraper._stable_file_id(u1, "a.pdf") == "file_456"

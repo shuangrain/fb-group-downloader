@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import re
 from datetime import datetime
 
 from playwright.async_api import Page
@@ -17,6 +19,31 @@ class GroupFilesScraper:
         self.config = group_config
         self.group_id = group_config.group_id
         self.seen_file_urls: set[str] = set()
+
+    @staticmethod
+    def _is_files_tab_url(url: str) -> bool:
+        """判斷是否為檔案專區列表頁本身（如 /groups/<id>/files 或 /files/files/），而非實際檔案"""
+        path = url.split("?")[0].split("#")[0].rstrip("/")
+        return path.endswith("/files")
+
+    @staticmethod
+    def _clean_file_url(url: str) -> str:
+        """剝離 __cft__ / __tn__ 等動態追蹤參數，使檔案網址與 ID 在不同執行輪次保持穩定"""
+        base = url.split("#")[0]
+        if "?" not in base:
+            return base
+        path, qs = base.split("?", 1)
+        kept = [p for p in qs.split("&") if not p.startswith("__cft__") and not p.startswith("__tn__")]
+        return f"{path}?{'&'.join(kept)}" if kept else path
+
+    @classmethod
+    def _stable_file_id(cls, url: str, filename: str) -> str:
+        """產生跨執行輪次穩定的檔案 media_id（優先擷取 download/<id> 或 permalink/<id>，否則用 md5）"""
+        m = re.search(r"/(?:download|permalink|files)/(\d+)", url)
+        if m:
+            return f"file_{m.group(1)}"
+        clean = f"{cls._clean_file_url(url)}_{filename}"
+        return f"file_{hashlib.md5(clean.encode('utf-8')).hexdigest()[:8]}"
 
     async def scan_files(self, page: Page) -> list[MediaItem]:
         """
@@ -80,9 +107,12 @@ class GroupFilesScraper:
             for f in files_data:
                 file_url = f.get("url", "")
                 filename = f.get("filename", "")
+                if not file_url or self._is_files_tab_url(file_url):
+                    continue
 
+                clean_url = self._clean_file_url(file_url)
                 # 去重
-                unique_key = f"{file_url}_{filename}"
+                unique_key = f"{clean_url}_{filename}"
                 if unique_key in self.seen_file_urls:
                     continue
 
@@ -94,9 +124,9 @@ class GroupFilesScraper:
                         group_id=self.group_id,
                         group_name=self.config.name,
                         media_type=MediaType.FILE,
-                        source_url=file_url,
+                        source_url=clean_url,
                         filename=filename,
-                        media_id=f"file_{hash(unique_key) & 0xFFFFFFFF:08x}",
+                        media_id=self._stable_file_id(file_url, filename),
                         post_author=f.get("author", ""),
                         post_time=datetime.utcnow().isoformat(),
                     )
