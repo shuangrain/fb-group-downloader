@@ -123,11 +123,13 @@ class GroupMediaScraper:
             await page.goto(album_url, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            # 滾動加載相簿內的圖片
+            # 滾動加載相簿內的圖片（持續滾動直到連續 3 次無新圖片載入，上限 50 次）
             photo_urls_seen: set[str] = set()
             media_items: list[MediaItem] = []
+            consecutive_no_new = 0
+            max_scrolls = 50
 
-            for _ in range(3):
+            for _ in range(max_scrolls):
                 photos_data = await page.evaluate(
                     r"""() => {
                         const getBestImgSrc = (img) => {
@@ -187,6 +189,7 @@ class GroupMediaScraper:
                     }"""
                 )
 
+                new_in_round = 0
                 for p in photos_data:
                     src = p.get("src")
                     photo_page_url = p.get("photoUrl", "")
@@ -195,6 +198,7 @@ class GroupMediaScraper:
                     if FacebookPhotoExtractor.is_icon_or_ui_asset(src):
                         continue
                     photo_urls_seen.add(src)
+                    new_in_round += 1
                     photo_id = self._extract_photo_id(photo_page_url) or self._stable_media_id(album_id, src)
 
                     # 若網址仍為縮圖標記且有相片頁面連結，透過 Photo Viewer 解析大圖
@@ -218,6 +222,13 @@ class GroupMediaScraper:
                         )
                     )
 
+                if new_in_round == 0:
+                    consecutive_no_new += 1
+                    if consecutive_no_new >= 3:
+                        break
+                else:
+                    consecutive_no_new = 0
+
                 await self.base.human_scroll(page)
 
             if media_items:
@@ -238,4 +249,5 @@ class GroupMediaScraper:
                 album_bundles.append(bundle)
                 logger.info(f"✓ 相簿【{album_title}】掃描完成，包含 {len(media_items)} 張相片。")
 
+        album_bundles.sort(key=lambda b: b.album_time or "", reverse=True)
         return album_bundles
