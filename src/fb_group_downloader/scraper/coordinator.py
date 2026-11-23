@@ -57,8 +57,8 @@ class SyncCoordinator:
             if group_cfg.scan_feed:
                 feed_scraper = GroupFeedScraper(base_scraper, group_cfg)
                 post_bundles = await feed_scraper.scan_feed(page, stop_at_post_id=last_seen_post_id)
-                if feed_scraper.seen_post_ids:
-                    newest_post_id = next(iter(feed_scraper.seen_post_ids))
+                if feed_scraper.newest_post_id:
+                    newest_post_id = feed_scraper.newest_post_id
 
                 # 掃描後立即將 Facebook 輪替更新後的 Cookies 回存至 session.json 並同步給下載器
                 await base_scraper.save_session()

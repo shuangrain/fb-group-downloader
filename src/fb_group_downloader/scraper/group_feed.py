@@ -21,6 +21,8 @@ class GroupFeedScraper:
         self.config = group_config
         self.group_id = group_config.group_id
         self.seen_post_ids: set[str] = set()
+        self._ts_cache: dict[str, tuple[str, str]] = {}
+        self.newest_post_id: str | None = None  # 本次掃描最先看到（最新）的貼文 ID
         self.seen_media_urls: set[str] = set()
 
         # 儲存網路攔截到的影片、音訊與高解析度照片直鏈
@@ -28,6 +30,28 @@ class GroupFeedScraper:
         self.intercepted_audio_streams: dict[str, str] = {}
         self.captured_cdn_mp4s: list[str] = []
         self.intercepted_photo_urls: dict[str, str] = {}
+
+    @staticmethod
+    def _normalize_post_url(url: str) -> str:
+        """正規化貼文網址：移除 comment_id、__cft__ 等追蹤參數，僅保留 /posts/<id>/ 或 /permalink/<id>/"""
+        m = re.match(r"(https://[^/]+/groups/[^/]+/(?:posts|permalink)/\d+)", url)
+        return m.group(1) + "/" if m else url
+
+    async def _hover_timestamp(self, page: Page, ts_idx: int) -> tuple[str, str]:
+        """hover 貼文時間戳連結，取得完整貼文網址與 tooltip 完整日期（失敗回傳空字串）"""
+        try:
+            loc = page.locator(f'[data-fbdl-ts="{ts_idx}"]').first
+            await loc.scroll_into_view_if_needed(timeout=3000)
+            await loc.hover(timeout=3000)
+            await asyncio.sleep(0.8)
+            href = await loc.get_attribute("href") or ""
+            tip = await page.evaluate(
+                "() => { const t = document.querySelector('[role=tooltip]'); return t ? t.innerText : ''; }"
+            )
+            return href, tip or ""
+        except Exception as e:
+            logger.debug(f"hover 貼文時間戳失敗：{e}")
+            return "", ""
 
     def _extract_post_id(self, url: str) -> str | None:
         """從貼文 URL 中擷取 Post ID"""
@@ -191,24 +215,34 @@ class GroupFeedScraper:
                     const results = [];
 
                     for (const article of articles) {
+                        // 略過留言本身（巢狀於貼文內的 role=article），避免被當成獨立貼文
+                        if (article.parentElement && article.parentElement.closest('[role="article"]')) continue;
+                        // 僅查詢屬於貼文本身的元素，排除巢狀留言區塊內的圖片/影片/連結/時間
+                        const inComment = (el) => {
+                            const c = el.closest('[role="article"]');
+                            return !!c && c !== article && article.contains(c);
+                        };
+                        const qAll = (sel) => Array.from(article.querySelectorAll(sel)).filter((e) => !inComment(e));
+                        const qOne = (sel) => qAll(sel)[0] || null;
+                        // 貼文網址可能只出現在留言連結中（/posts/<id>/?comment_id=…），其貼文 ID 仍屬於該貼文，故此處不排除留言
                         const links = Array.from(article.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="multi_permalinks="], a[href*="story_fbid="]'));
                         let postUrl = links.length > 0 ? links[0].href : "";
 
                         let author = "";
-                        for (const ua of Array.from(article.querySelectorAll('a[href*="/user/"]'))) {
+                        for (const ua of Array.from(qAll('a[href*="/user/"]'))) {
                             const t = ua.innerText ? ua.innerText.trim() : "";
                             if (t) { author = t; break; }
                         }
                         if (!author) {
-                            const authorElem = article.querySelector('h2 strong, h3 strong');
+                            const authorElem = qOne('h2 strong, h3 strong');
                             author = authorElem ? authorElem.innerText.trim() : "";
                         }
 
-                        const msgElem = article.querySelector('div[data-ad-preview="message"], div[dir="auto"]');
+                        const msgElem = qOne('div[data-ad-preview="message"], div[dir="auto"]');
                         const text = msgElem ? msgElem.innerText.trim() : "";
 
                         const images = [];
-                        const imgElems = Array.from(article.querySelectorAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
+                        const imgElems = Array.from(qAll('img[src*="fbcdn.net"], img[src*="scontent"]'));
                         for (const img of imgElems) {
                             const src = getBestImgSrc(img);
                             const isUiAsset = src.includes('emoji.php') || src.includes('rsrc.php') || src.includes('static.xx.fbcdn.net') || src.includes('static.facebook.com') || src.includes('favicon') || src.includes('/assets/');
@@ -224,13 +258,13 @@ class GroupFeedScraper:
                         }
 
                         const videos = [];
-                        const videoElems = Array.from(article.querySelectorAll('video'));
+                        const videoElems = Array.from(qAll('video'));
                         for (const v of videoElems) {
                             if (v.src && !v.src.startsWith('blob:')) {
                                 videos.push({ url: v.src, isDirect: true });
                             }
                         }
-                        const videoLinks = Array.from(article.querySelectorAll('a[href*="/videos/"], a[href*="/watch"], div[data-video-id]'));
+                        const videoLinks = Array.from(qAll('a[href*="/videos/"], a[href*="/watch"], div[data-video-id]'));
                         for (const vl of videoLinks) {
                             const href = vl.href || (vl.getAttribute('data-video-id') ? `https://www.facebook.com/watch/?v=${vl.getAttribute('data-video-id')}` : "");
                             if (href) {
@@ -239,7 +273,7 @@ class GroupFeedScraper:
                         }
 
                         const files = [];
-                        const fileLinks = Array.from(article.querySelectorAll('a[href*="/download/"], a[href*="/files/"], a[href*="download"], a[href*="attachment"]'));
+                        const fileLinks = Array.from(qAll('a[href*="/download/"], a[href*="/files/"], a[href*="download"], a[href*="attachment"]'));
                         for (const fl of fileLinks) {
                             files.push({
                                 url: fl.href,
@@ -249,11 +283,11 @@ class GroupFeedScraper:
 
                         // 擷取貼文發布時間文字
                         let postTimeStr = "";
-                        for (const el of Array.from(article.querySelectorAll('[aria-label]'))) {
+                        for (const el of Array.from(qAll('[aria-label]'))) {
                             const al = el.getAttribute('aria-label') || "";
                             if (/\d{4}年\d{1,2}月\d{1,2}日/.test(al)) { postTimeStr = al; break; }
                         }
-                        const abbrElem = article.querySelector('abbr[aria-label], a[aria-label]');
+                        const abbrElem = qOne('abbr[aria-label], a[aria-label]');
                         if (!postTimeStr && abbrElem) {
                             postTimeStr = abbrElem.getAttribute('aria-label') || "";
                         }
@@ -267,7 +301,7 @@ class GroupFeedScraper:
                             }
                         }
                         if (!postTimeStr) {
-                            const spans = Array.from(article.querySelectorAll('span'));
+                            const spans = Array.from(qAll('span'));
                             for (const s of spans) {
                                 const txt = s.innerText ? s.innerText.trim() : "";
                                 if (txt && (txt.includes('年') || txt.includes('月') || txt.includes('日') || txt.includes('天') || txt.includes('小時') || txt.includes('分鐘') || txt.includes('昨天') || txt.includes('前'))) {
@@ -279,7 +313,19 @@ class GroupFeedScraper:
                             }
                         }
 
-                        const isAlbumPost = article.querySelector('a[href*="/media/set/"], a[href*="set=oa."], a[href*="/albums/"]') !== null;
+                        // 標記時間戳連結：其 href 初始為 "?__cft__..."，滑鼠 hover 後才會變成完整貼文網址，並顯示完整日期 tooltip
+                        let tsIdx = -1;
+                        for (const l of qAll('a')) {
+                            const h = l.getAttribute('href') || '';
+                            if (h.startsWith('?__cft__') || /\/(posts|permalink)\/\d+/.test(h)) {
+                                window.__fbdlTs = (window.__fbdlTs || 0) + 1;
+                                l.setAttribute('data-fbdl-ts', String(window.__fbdlTs));
+                                tsIdx = window.__fbdlTs;
+                                break;
+                            }
+                        }
+
+                        const isAlbumPost = qOne('a[href*="/media/set/"], a[href*="set=oa."], a[href*="/albums/"]') !== null;
 
                         if (postUrl || images.length > 0 || videos.length > 0 || files.length > 0) {
                             results.push({
@@ -288,6 +334,7 @@ class GroupFeedScraper:
                                 text: text,
                                 postTimeStr: postTimeStr,
                                 isAlbumPost: isAlbumPost,
+                                tsIdx: tsIdx,
                                 images: images,
                                 videos: videos,
                                 files: files
@@ -302,10 +349,7 @@ class GroupFeedScraper:
 
             for p_data in posts_data:
                 post_url = p_data.get("postUrl", "").strip()
-                # 正規化貼文網址：移除 comment_id、__cft__ 等追蹤參數，僅保留 /posts/<id>/ 或 /permalink/<id>/
-                m_norm = re.match(r"(https://[^/]+/groups/[^/]+/(?:posts|permalink)/\d+)", post_url)
-                if m_norm:
-                    post_url = m_norm.group(1) + "/"
+                post_url = self._normalize_post_url(post_url)
                 author = p_data.get("author", "").strip()
                 text = p_data.get("text", "").strip()
                 is_album_post = bool(p_data.get("isAlbumPost", False))
@@ -324,6 +368,19 @@ class GroupFeedScraper:
                     logger.debug(f"略過相簿預覽貼文（已由相簿專區完整下載）：{author}")
                     continue
 
+                # 以 hover 時間戳連結取得貼文網址與完整發布日期（同一篇貼文僅 hover 一次）
+                post_time_str = p_data.get("postTimeStr", "")
+                ts_key = f"{author}:{text[:60]}"
+                ts_idx = p_data.get("tsIdx", -1)
+                if ts_key not in self._ts_cache and ts_idx and ts_idx > 0:
+                    href, tip = await self._hover_timestamp(page, ts_idx)
+                    self._ts_cache[ts_key] = (self._normalize_post_url(href) if href.startswith("http") else "", tip)
+                cached_url, cached_tip = self._ts_cache.get(ts_key, ("", ""))
+                if cached_url and not self._extract_post_id(post_url or ""):
+                    post_url = cached_url
+                if cached_tip:
+                    post_time_str = cached_tip
+
                 post_id = self._extract_post_id(post_url) if post_url else None
 
                 if not post_id:
@@ -335,13 +392,14 @@ class GroupFeedScraper:
                     continue
 
                 self.seen_post_ids.add(post_id)
+                if self.newest_post_id is None:
+                    self.newest_post_id = post_id
                 new_posts_found += 1
 
                 if stop_at_post_id and post_id == stop_at_post_id:
                     logger.info(f"已抵達上次同步的貼文 (ID: {stop_at_post_id})，停止向下滾動。")
                     return extracted_bundles
 
-                post_time_str = p_data.get("postTimeStr", "")
                 post_time = parse_fb_date(post_time_str, reference_text=f"{author} {text}")
                 media_items: list[MediaItem] = []
 
