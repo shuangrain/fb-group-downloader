@@ -7,10 +7,15 @@ def test_parse_fb_date_full():
     res = parse_fb_date("2024年10月15日 下午2:30")
     dt = datetime.fromisoformat(res)
     assert dt.strftime("%Y%m%d") == "20241015"
+    assert (dt.hour, dt.minute) == (14, 30)
 
     res2 = parse_fb_date("2023/5/8")
     dt2 = datetime.fromisoformat(res2)
     assert dt2.strftime("%Y%m%d") == "20230508"
+
+    res3 = parse_fb_date("2026年7月14日 星期二上午8:23")
+    dt3 = datetime.fromisoformat(res3)
+    assert dt3.strftime("%Y%m%d %H:%M") == "20260714 08:23"
 
 
 def test_parse_fb_date_roc():

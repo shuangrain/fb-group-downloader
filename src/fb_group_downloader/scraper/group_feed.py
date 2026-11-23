@@ -22,7 +22,8 @@ class GroupFeedScraper:
         self.group_id = group_config.group_id
         self.seen_post_ids: set[str] = set()
         self._ts_cache: dict[str, tuple[str, str]] = {}
-        self.newest_post_id: str | None = None  # 本次掃描最先看到（最新）的貼文 ID
+        self.newest_post_id: str | None = None  # 本次掃描中發布時間最新（或最先看到）的貼文 ID
+        self.newest_post_time: str | None = None
         self.seen_media_urls: set[str] = set()
 
         # 儲存網路攔截到的影片、音訊與高解析度照片直鏈
@@ -392,15 +393,19 @@ class GroupFeedScraper:
                     continue
 
                 self.seen_post_ids.add(post_id)
-                if self.newest_post_id is None:
+                post_time = parse_fb_date(post_time_str, reference_text=f"{author} {text}")
+                if self.newest_post_id is None or (
+                    self.newest_post_time is not None and post_time > self.newest_post_time
+                ):
                     self.newest_post_id = post_id
+                    self.newest_post_time = post_time
                 new_posts_found += 1
 
                 if stop_at_post_id and post_id == stop_at_post_id:
                     logger.info(f"已抵達上次同步的貼文 (ID: {stop_at_post_id})，停止向下滾動。")
+                    extracted_bundles.sort(key=lambda b: b.post_time or "", reverse=True)
                     return extracted_bundles
 
-                post_time = parse_fb_date(post_time_str, reference_text=f"{author} {text}")
                 media_items: list[MediaItem] = []
 
                 # 收集圖片（高解析度原圖優選）
@@ -545,6 +550,7 @@ class GroupFeedScraper:
 
             await self.base.human_scroll(page, delay_range=self.base.config.scroll_delay_range)
 
+        extracted_bundles.sort(key=lambda b: b.post_time or "", reverse=True)
         logger.info(
             f"動態掃描完成，共掃描 {len(self.seen_post_ids)} 篇貼文，發現 {len(extracted_bundles)} 篇含有媒體的貼文。"
         )

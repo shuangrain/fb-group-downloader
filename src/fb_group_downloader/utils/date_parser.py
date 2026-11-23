@@ -2,11 +2,29 @@ import re
 from datetime import datetime, timedelta
 
 
+def _extract_time_of_day(text: str) -> tuple[int, int]:
+    """從文字擷取時分（如『下午3:36』、『上午8:23』、『14:30』），無則預設 (12, 0)"""
+    m = re.search(r"(上午|下午|早上|晚上|中午|凌晨|AM|PM|am|pm)?\s*(\d{1,2}):(\d{2})", text)
+    if not m:
+        return 12, 0
+    meridiem = (m.group(1) or "").lower()
+    hour, minute = int(m.group(2)), int(m.group(3))
+    if meridiem in ("下午", "晚上", "pm") and hour < 12:
+        hour += 12
+    elif meridiem == "中午" and hour < 11:
+        hour += 12
+    elif meridiem in ("上午", "早上", "凌晨", "am") and hour == 12:
+        hour = 0
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return hour, minute
+    return 12, 0
+
+
 def parse_fb_date(date_str: str | None, reference_text: str | None = None) -> str:
     """
     解析 Facebook 貼文或相簿的發布/建立時間，回傳 ISO 格式 (YYYY-MM-DDTHH:MM:SS)
     支援：
-    - 完整中文年月日：2024年10月15日、2024-10-15、2024/10/15
+    - 完整中文年月日（含上下午時分）：2024年10月15日 下午3:36、2024-10-15、2024/10/15
     - 當年度月日：8月25日、8/31-9/11學習區
     - 相對時間：昨天、前天、N天前、N小時前、剛剛
     - 標題或內文開頭的日期：如 9/7-9/11、20240901、113/09/01
@@ -25,12 +43,14 @@ def parse_fb_date(date_str: str | None, reference_text: str | None = None) -> st
         if not text:
             continue
 
+        hh, mm = _extract_time_of_day(text)
+
         # 1. 完整年月日：例如 2024年10月15日、2024-10-15、2024/10/15
         m_full = re.search(r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})", text)
         if m_full:
             y, m, d = int(m_full.group(1)), int(m_full.group(2)), int(m_full.group(3))
             try:
-                return datetime(y, m, d, 12, 0, 0).isoformat()
+                return datetime(y, m, d, hh, mm, 0).isoformat()
             except ValueError:
                 pass
 
@@ -42,7 +62,7 @@ def parse_fb_date(date_str: str | None, reference_text: str | None = None) -> st
                 y = roc_y + 1911
                 m, d = int(m_roc.group(2)), int(m_roc.group(3))
                 try:
-                    return datetime(y, m, d, 12, 0, 0).isoformat()
+                    return datetime(y, m, d, hh, mm, 0).isoformat()
                 except ValueError:
                     pass
 
@@ -55,7 +75,7 @@ def parse_fb_date(date_str: str | None, reference_text: str | None = None) -> st
                 if m > now.month + 1:
                     y -= 1
                 try:
-                    return datetime(y, m, d, 12, 0, 0).isoformat()
+                    return datetime(y, m, d, hh, mm, 0).isoformat()
                 except ValueError:
                     pass
 
@@ -63,7 +83,7 @@ def parse_fb_date(date_str: str | None, reference_text: str | None = None) -> st
         m_digits = re.search(r"\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b", text)
         if m_digits:
             y, m, d = int(m_digits.group(1)), int(m_digits.group(2)), int(m_digits.group(3))
-            return datetime(y, m, d, 12, 0, 0).isoformat()
+            return datetime(y, m, d, hh, mm, 0).isoformat()
 
         # 5. 昨天 / 前天
         if "昨天" in text or "yesterday" in text.lower():
