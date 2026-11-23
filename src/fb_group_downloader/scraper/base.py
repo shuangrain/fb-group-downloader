@@ -170,9 +170,20 @@ class BaseScraper:
         return page
 
     async def human_scroll(self, page: Page, delay_range: tuple[float, float] = (1.5, 3.0)) -> None:
-        """模擬人類滾動頁面行為"""
-        scroll_distance = random.randint(400, 800)
-        await page.evaluate(f"window.scrollBy(0, {scroll_distance})")
+        """模擬人類滾動頁面行為（同時支援 window 滾動與相簿等內層 overflow 容器滾動）"""
+        scroll_distance = random.randint(600, 1000)
+        await page.evaluate(
+            """(dist) => {
+                window.scrollBy(0, dist);
+                for (const el of document.querySelectorAll('div')) {
+                    const st = getComputedStyle(el);
+                    if ((st.overflowY === 'auto' || st.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 100) {
+                        el.scrollBy(0, dist);
+                    }
+                }
+            }""",
+            scroll_distance,
+        )
         delay = random.uniform(*delay_range)
         await asyncio.sleep(delay)
 
