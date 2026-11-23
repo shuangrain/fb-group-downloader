@@ -56,9 +56,9 @@ def main() -> None:
 
     manual = [(d, k) for d, k in to_delete if n_files(d) > 0]
     to_delete = [(d, k) for d, k in to_delete if n_files(d) == 0]
-    for d, kind in to_delete:
+    for d, _kind in to_delete:
         print(f"{'刪除' if apply else '[dry-run] 將刪除'}（空資料夾）: {d}")
-    for d, kind in manual:
+    for d, _kind in manual:
         print(f"[需人工處理] 含 {n_files(d)} 個檔案，不會自動刪除: {d}")
     if not to_delete:
         print("沒有可自動刪除的空重複資料夾。")

@@ -347,7 +347,7 @@ class GroupFeedScraper:
 
                 # 收集圖片（高解析度原圖優選）
                 if self.config.download_images:
-                    for idx, img_info in enumerate(p_data.get("images", [])):
+                    for img_info in p_data.get("images", []):
                         img_src = img_info.get("src")
                         if not img_src or FacebookPhotoExtractor.is_icon_or_ui_asset(img_src):
                             continue
