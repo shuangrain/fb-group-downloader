@@ -66,6 +66,30 @@ class DownloadManager:
         except Exception as e:
             logger.warning(f"儲存相簿資訊檔失敗：{e}")
 
+    @staticmethod
+    def _find_existing_dir(parent: Path, info_name: str, id_key: str, id_value: str | None) -> Path | None:
+        """在 parent 下尋找已建立、且 info json 內 id 相同的資料夾，避免因日期 fallback 變動而重複建立"""
+        if not id_value or not parent.exists():
+            return None
+        for d in sorted(parent.iterdir()):
+            info = d / info_name
+            if not info.is_file():
+                continue
+            try:
+                if json.loads(info.read_text(encoding="utf-8")).get(id_key) == id_value:
+                    return d
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _remove_if_empty(d: Path) -> None:
+        try:
+            if d.exists() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+
     async def process_post(self, post_bundle: PostBundle) -> list[DownloadRecord]:
         """
         以「貼文」為獨立單位進行下載，儲存至 yyyyMMdd <name> 獨立資料夾
@@ -92,7 +116,11 @@ class DownloadManager:
         # 貼文專屬資料夾路徑：downloads/<group_name_or_id>/posts/yyyyMMdd <name>/
         group_folder = post_bundle.get_group_folder_name()
         folder_name = post_bundle.get_folder_name()
-        post_dir = self.storage_dir / group_folder / "posts" / folder_name
+        posts_root = self.storage_dir / group_folder / "posts"
+        post_dir = (
+            self._find_existing_dir(posts_root, "post_info.json", "post_id", post_bundle.post_id)
+            or posts_root / folder_name
+        )
 
         results: list[DownloadRecord] = []
         img_idx = 1
@@ -153,11 +181,14 @@ class DownloadManager:
         # 建立相簿專屬資料夾：downloads/<group_name_or_id>/albums/yyyyMMdd <name>/
         group_folder = album_bundle.get_group_folder_name()
         folder_name = album_bundle.get_folder_name()
-        album_dir = self.storage_dir / group_folder / "albums" / folder_name
+        albums_root = self.storage_dir / group_folder / "albums"
+        album_dir = (
+            self._find_existing_dir(albums_root, "album_info.json", "album_id", album_bundle.album_id)
+            or albums_root / folder_name
+        )
         album_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"📁 建立/使用相簿資料夾：{album_dir.parent.name}/{album_dir.name}")
-        self._save_album_metadata(album_bundle, album_dir)
 
         results: list[DownloadRecord] = []
         for idx, item in enumerate(items_to_download, start=1):
@@ -169,6 +200,11 @@ class DownloadManager:
                 self.db.record_failure(
                     item, error_msg="Album image download failed", target_dir=str(album_dir.resolve())
                 )
+
+        if results:
+            self._save_album_metadata(album_bundle, album_dir)
+        else:
+            self._remove_if_empty(album_dir)
 
         return results
 

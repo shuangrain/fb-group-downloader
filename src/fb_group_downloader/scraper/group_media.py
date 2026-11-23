@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -30,7 +31,21 @@ class GroupMediaScraper:
         m = re.search(r"/albums/(\d+)", url)
         if m:
             return m.group(1)
-        return f"album_{hash(url) & 0xFFFFFFFF:08x}"
+        # 注意：不可使用內建 hash()（每次執行都會隨機化），改用穩定的 md5
+        return f"album_{hashlib.md5(url.encode('utf-8')).hexdigest()[:8]}"
+
+    @staticmethod
+    def _is_album_list_url(url: str) -> bool:
+        """判斷是否為「相簿專區列表頁」本身（非單一相簿）"""
+        path = url.split("?")[0].split("#")[0].rstrip("/")
+        return path.endswith("/media/albums") or path.endswith("/media")
+
+    @staticmethod
+    def _stable_media_id(album_id: str, src: str) -> str:
+        """無 fbid 時，以 CDN 檔名產生穩定 ID（不隨掃描順序變動）"""
+        name = src.split("?")[0].rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0] or hashlib.md5(src.encode("utf-8")).hexdigest()[:12]
+        return f"{album_id}_{stem}"
 
     def _extract_photo_id(self, url: str) -> str:
         m = re.search(r"fbid=(\d+)", url)
@@ -96,6 +111,8 @@ class GroupMediaScraper:
         for album in albums_info:
             album_url = album.get("url", "")
             album_title = album.get("title", "")
+            if self._is_album_list_url(album_url):
+                continue
             album_id = self._extract_album_id(album_url)
 
             if album_id in self.seen_album_ids:
@@ -178,7 +195,7 @@ class GroupMediaScraper:
                     if FacebookPhotoExtractor.is_icon_or_ui_asset(src):
                         continue
                     photo_urls_seen.add(src)
-                    photo_id = self._extract_photo_id(photo_page_url) or f"img_{len(media_items) + 1}"
+                    photo_id = self._extract_photo_id(photo_page_url) or self._stable_media_id(album_id, src)
 
                     # 若網址仍為縮圖標記且有相片頁面連結，透過 Photo Viewer 解析大圖
                     if FacebookPhotoExtractor.is_thumbnail_url(src) and photo_page_url:

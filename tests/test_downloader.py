@@ -166,3 +166,27 @@ async def test_download_manager_process_album_bundle(tmp_path: Path):
     album_dir = storage_dir / "group_1" / "albums" / "20260831 2026年度相簿"
     assert album_dir.exists()
     assert (album_dir / "album_info.json").exists()
+
+
+def test_album_id_is_stable_and_list_url_detected():
+    from fb_group_downloader.scraper.group_media import GroupMediaScraper
+
+    f = GroupMediaScraper._extract_album_id
+    url = "https://www.facebook.com/groups/1/media/albums/"
+    assert f(None, url) == f(None, url)
+    assert f(None, url).startswith("album_")
+    assert GroupMediaScraper._is_album_list_url(url)
+    assert not GroupMediaScraper._is_album_list_url("https://www.facebook.com/groups/1/media/set/?set=oa.123")
+    a = GroupMediaScraper._stable_media_id("a1", "https://x/v/t1/515_137_n.jpg?stp=1")
+    assert a == "a1_515_137_n"
+
+
+def test_find_existing_dir_reuses_folder_across_date_change(tmp_path: Path):
+    import json
+
+    root = tmp_path / "albums"
+    d = root / "20260831 foo"
+    d.mkdir(parents=True)
+    (d / "album_info.json").write_text(json.dumps({"album_id": "42"}))
+    assert DownloadManager._find_existing_dir(root, "album_info.json", "album_id", "42") == d
+    assert DownloadManager._find_existing_dir(root, "album_info.json", "album_id", "43") is None

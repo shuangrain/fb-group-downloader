@@ -60,6 +60,13 @@ class GroupFeedScraper:
                 return m.group(1)
         return None
 
+    @staticmethod
+    def _stable_media_id(prefix: str, src: str) -> str:
+        """無 fbid 時，以 CDN 檔名產生穩定 ID（不隨順序變動）"""
+        name = src.split("?")[0].rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0] or hashlib.md5(src.encode("utf-8")).hexdigest()[:12]
+        return f"{prefix}_{stem}"
+
     def _extract_video_id(self, url: str) -> str | None:
         """從影片網址擷取 Video ID"""
         return FacebookVideoExtractor.extract_video_id_from_url(url)
@@ -187,8 +194,15 @@ class GroupFeedScraper:
                         const links = Array.from(article.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="multi_permalinks="], a[href*="story_fbid="]'));
                         let postUrl = links.length > 0 ? links[0].href : "";
 
-                        const authorElem = article.querySelector('h2 strong, h3 strong, a strong, strong span');
-                        const author = authorElem ? authorElem.innerText.trim() : "";
+                        let author = "";
+                        for (const ua of Array.from(article.querySelectorAll('a[href*="/user/"]'))) {
+                            const t = ua.innerText ? ua.innerText.trim() : "";
+                            if (t) { author = t; break; }
+                        }
+                        if (!author) {
+                            const authorElem = article.querySelector('h2 strong, h3 strong');
+                            author = authorElem ? authorElem.innerText.trim() : "";
+                        }
 
                         const msgElem = article.querySelector('div[data-ad-preview="message"], div[dir="auto"]');
                         const text = msgElem ? msgElem.innerText.trim() : "";
@@ -235,8 +249,12 @@ class GroupFeedScraper:
 
                         // 擷取貼文發布時間文字
                         let postTimeStr = "";
+                        for (const el of Array.from(article.querySelectorAll('[aria-label]'))) {
+                            const al = el.getAttribute('aria-label') || "";
+                            if (/\d{4}年\d{1,2}月\d{1,2}日/.test(al)) { postTimeStr = al; break; }
+                        }
                         const abbrElem = article.querySelector('abbr[aria-label], a[aria-label]');
-                        if (abbrElem) {
+                        if (!postTimeStr && abbrElem) {
                             postTimeStr = abbrElem.getAttribute('aria-label') || "";
                         }
                         if (!postTimeStr) {
@@ -284,9 +302,17 @@ class GroupFeedScraper:
 
             for p_data in posts_data:
                 post_url = p_data.get("postUrl", "").strip()
+                # 正規化貼文網址：移除 comment_id、__cft__ 等追蹤參數，僅保留 /posts/<id>/ 或 /permalink/<id>/
+                m_norm = re.match(r"(https://[^/]+/groups/[^/]+/(?:posts|permalink)/\d+)", post_url)
+                if m_norm:
+                    post_url = m_norm.group(1) + "/"
                 author = p_data.get("author", "").strip()
                 text = p_data.get("text", "").strip()
                 is_album_post = bool(p_data.get("isAlbumPost", False))
+
+                # 作者選擇器常誤抓到貼文標題（與內文開頭相同），此時視為無作者
+                if author and text.startswith(author):
+                    author = ""
 
                 # 忽略既無作者也無文字內文的區塊（例如相簿上傳預覽卡或動態牆非貼文容器），避免產生「貼文_post_xxxx」
                 if not author and not text:
@@ -301,7 +327,7 @@ class GroupFeedScraper:
                 post_id = self._extract_post_id(post_url) if post_url else None
 
                 if not post_id:
-                    stable_key = post_url or f"{author}:{text}"
+                    stable_key = post_url or f"{author}:{text[:60]}"
                     digest = hashlib.md5(stable_key.encode("utf-8")).hexdigest()[:8]
                     post_id = f"post_{digest}"
 
@@ -326,7 +352,7 @@ class GroupFeedScraper:
                         if not img_src or FacebookPhotoExtractor.is_icon_or_ui_asset(img_src):
                             continue
                         photo_url = img_info.get("photoUrl", "")
-                        media_id = self._extract_photo_id(photo_url) or f"{post_id}_img_{idx + 1}"
+                        media_id = self._extract_photo_id(photo_url) or self._stable_media_id(post_id, img_src)
 
                         # 確保相片有 photo_url 供 Photo Viewer 解析大圖
                         if not photo_url and media_id and media_id.isdigit():
