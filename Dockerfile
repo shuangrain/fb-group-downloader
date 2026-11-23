@@ -34,11 +34,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # 先複製專案定義檔以利用 Docker 快取層
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
-# 安裝 Python 依賴套件並安裝專案 CLI
-RUN uv pip install --no-cache -e .
+# 依 uv.lock 以固定版本安裝依賴（含 Playwright），再安裝專案 CLI
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+    && uv pip install --no-cache -r /tmp/requirements.txt \
+    && uv pip install --no-cache --no-deps -e .
 
 # 安裝 Playwright Chromium 瀏覽器及其所需的 Linux 系統函式庫
 RUN playwright install --with-deps chromium
