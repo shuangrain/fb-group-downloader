@@ -37,10 +37,9 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
-# 依 uv.lock 以固定版本安裝依賴（含 Playwright），再安裝專案 CLI
-RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
-    && uv pip install --no-cache -r /tmp/requirements.txt \
-    && uv pip install --no-cache --no-deps -e .
+# 依 uv.lock 以固定版本安裝依賴（含 Playwright）與專案 CLI，並裝進系統 Python
+ENV UV_PROJECT_ENVIRONMENT=/usr/local
+RUN uv sync --frozen --no-dev --no-cache
 
 # 安裝 Playwright Chromium 瀏覽器及其所需的 Linux 系統函式庫
 RUN playwright install --with-deps chromium
