@@ -28,6 +28,11 @@ class FileDownloader:
             if match:
                 return urllib.parse.unquote(match.group(1))
 
+        # 若無 UTF-8 編碼的 filename*，而 fallback（來自 URL 或貼文文字）本身含有非 ASCII 字元（如完整中文檔名），
+        # 優先採用 fallback，避免 ASCII-only 的 filename="115_.pdf" 把中文字元吃掉
+        if fallback and any(ord(c) > 127 for c in fallback) and "." in fallback:
+            return fallback
+
         if "filename=" in cd:
             match = re.search(r'filename="?([^";]+)"?', cd, re.IGNORECASE)
             if match:
@@ -108,6 +113,13 @@ class FileDownloader:
                 content = resp.content
                 if not content:
                     logger.warning(f"檔案內容為空：{target_url[:80]}...")
+                    return None
+
+                # 防呆：拒絕將 Facebook HTML 網頁（如 /permalink/ 或 /files/ 分頁）誤存為 PDF 等二進位檔案
+                content_type = (resp.headers.get("content-type") or "").lower()
+                head_snip = content[:256].lstrip().lower()
+                if "text/html" in content_type or head_snip.startswith((b"<!doctype html", b"<html")):
+                    logger.warning(f"略過 HTML 網頁回應（非真實檔案直鏈）：{target_url[:80]}...")
                     return None
 
                 sha256_hash = hashlib.sha256(content).hexdigest()

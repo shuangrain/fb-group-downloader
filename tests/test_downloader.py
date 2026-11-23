@@ -213,6 +213,7 @@ def test_cleanup_find_and_delete_duplicates(tmp_path: Path):
 
 
 def test_files_scraper_helpers():
+    from fb_group_downloader.downloader.file import FileDownloader
     from fb_group_downloader.scraper.group_files import GroupFilesScraper
 
     assert GroupFilesScraper._is_files_tab_url("https://www.facebook.com/groups/123/files/files/")
@@ -224,3 +225,20 @@ def test_files_scraper_helpers():
     assert GroupFilesScraper._clean_file_url(u1) == "https://www.facebook.com/groups/123/permalink/456/"
     assert GroupFilesScraper._stable_file_id(u1, "a.pdf") == GroupFilesScraper._stable_file_id(u2, "a.pdf")
     assert GroupFilesScraper._stable_file_id(u1, "a.pdf") == "file_456"
+
+    sample_html = (
+        r'{"url":"https:\/\/www.facebook.com\/download\/1812754796560037\/'
+        r'115\u0025E5\u0025B9\u0025B4\u0025E6\u002598\u00259F\u0025E6\u002598\u00259F'
+        r'\u0025E7\u00258F\u0025AD\u0025E5\u0025AE\u0025B6\u0025E9\u002595\u0025B7'
+        r'\u0025E6\u00259C\u002583.pdf?ext=1&hash=abc"}'
+    )
+    dl_map = GroupFilesScraper._extract_download_urls_from_html(sample_html)
+    assert "115年星星班家長會.pdf" in dl_map
+    assert dl_map["115年星星班家長會.pdf"].startswith("https://www.facebook.com/download/1812754796560037/")
+
+    fd = FileDownloader(Path("/tmp"))
+    name = fd._extract_filename_from_headers(
+        {"Content-Disposition": 'attachment; filename="115_.pdf"'},
+        fallback="115年星星班家長會.pdf",
+    )
+    assert name == "115年星星班家長會.pdf"

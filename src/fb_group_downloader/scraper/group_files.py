@@ -37,6 +37,24 @@ class GroupFilesScraper:
         return f"{path}?{'&'.join(kept)}" if kept else path
 
     @classmethod
+    def _extract_download_urls_from_html(cls, html: str) -> dict[str, str]:
+        """從頁面 HTML 內嵌 JSON 擷取真實的 /download/<id>/<filename> 直鏈（以 unquoted 檔名或路徑為 key）"""
+        raw_matches = re.findall(r'https?:\\?/\\?/www\.facebook\.com\\?/download\\?/\d+\\?/[^"\'<>\s]+', html)
+        mapping: dict[str, str] = {}
+        for raw in raw_matches:
+            clean = raw.replace(r"\/", "/").replace("\\u0025", "%").replace("\\u0026", "&")
+            try:
+                path_part = clean.split("?")[0].rstrip("/")
+                fname = path_part.rsplit("/", 1)[-1]
+                from urllib.parse import unquote
+
+                unquoted_name = unquote(fname)
+                mapping[unquoted_name] = clean
+            except Exception:
+                continue
+        return mapping
+
+    @classmethod
     def _stable_file_id(cls, url: str, filename: str) -> str:
         """產生跨執行輪次穩定的檔案 media_id（優先擷取 download/<id> 或 permalink/<id>，否則用 md5）"""
         m = re.search(r"/(?:download|permalink|files)/(\d+)", url)
@@ -103,6 +121,8 @@ class GroupFilesScraper:
                 }"""
             )
 
+            html_download_map = self._extract_download_urls_from_html(await page.content())
+
             new_found = 0
             for f in files_data:
                 file_url = f.get("url", "")
@@ -110,13 +130,17 @@ class GroupFilesScraper:
                 if not file_url or self._is_files_tab_url(file_url):
                     continue
 
-                clean_url = self._clean_file_url(file_url)
-                # 去重
-                unique_key = f"{clean_url}_{filename}"
-                if unique_key in self.seen_file_urls:
+                # 若連結為 /permalink/ 貼文頁而非 /download/ 直鏈，優先替換為頁面 JSON 內嵌的真實 /download/ 直鏈
+                if "/download/" not in file_url and filename in html_download_map:
+                    file_url = html_download_map[filename]
+
+                clean_url = file_url if "/download/" in file_url else self._clean_file_url(file_url)
+                # 去重（以穩定的 file_id 去重，避免帶 token 的下載直鏈重複）
+                stable_id = self._stable_file_id(file_url, filename)
+                if stable_id in self.seen_file_urls:
                     continue
 
-                self.seen_file_urls.add(unique_key)
+                self.seen_file_urls.add(stable_id)
                 new_found += 1
 
                 extracted_items.append(
@@ -126,7 +150,7 @@ class GroupFilesScraper:
                         media_type=MediaType.FILE,
                         source_url=clean_url,
                         filename=filename,
-                        media_id=self._stable_file_id(file_url, filename),
+                        media_id=stable_id,
                         post_author=f.get("author", ""),
                         post_time=datetime.utcnow().isoformat(),
                     )

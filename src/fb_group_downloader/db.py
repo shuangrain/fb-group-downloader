@@ -302,6 +302,26 @@ class Database:
                             )
                             conn.commit()
                             return False
+                    # 3. 若為檔案，檢查本機檔案是否實際上被誤存為 HTML 網頁
+                    if media_type == "file":
+                        p = self._resolve_local_path(local_path)
+                        is_html_file = False
+                        if p and p.exists():
+                            try:
+                                with open(p, "rb") as f:
+                                    head = f.read(256).lstrip().lower()
+                                    if head.startswith((b"<!doctype html", b"<html")):
+                                        is_html_file = True
+                            except Exception:
+                                pass
+                        if not p or not p.exists() or is_html_file:
+                            logger.warning(f"[清理/修復] 偵測到無效或 HTML 假檔案，清除舊檔以重新下載：{local_path or media_id}")
+                            self._remove_file_and_empty_parents(p)
+                            cursor.execute(
+                                "DELETE FROM downloads WHERE group_id = ? AND media_id = ?", (group_id, media_id)
+                            )
+                            conn.commit()
+                            return False
                     return True
 
             if original_url:
@@ -415,6 +435,26 @@ class Database:
             for rec_id in img_to_delete:
                 cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
             img_deleted = len(img_to_delete)
+
+            # 同步清理誤把 HTML 網頁（如 /files/ 分頁或 /permalink/ 網頁）存成檔案的歷史紀錄
+            cursor.execute(
+                f"SELECT id, local_filepath FROM downloads WHERE media_type = 'file'{v_filter}",
+                params,
+            )
+            for rec_id, path_str in cursor.fetchall():
+                p = self._resolve_local_path(path_str)
+                is_bad = False
+                if p and p.exists():
+                    try:
+                        with open(p, "rb") as f:
+                            head = f.read(256).lstrip().lower()
+                            if head.startswith((b"<!doctype html", b"<html")):
+                                is_bad = True
+                    except Exception:
+                        pass
+                if is_bad:
+                    self._remove_file_and_empty_parents(p)
+                    cursor.execute("DELETE FROM downloads WHERE id = ?", (rec_id,))
 
             # 同步清理 download_failures 中誤記的 UI 圖示與 Emoji
             cursor.execute(
