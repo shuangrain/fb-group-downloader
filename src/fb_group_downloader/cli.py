@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from fb_group_downloader.auth.session import SessionManager
+from fb_group_downloader.cleanup import delete_empty_duplicates, find_duplicates
 from fb_group_downloader.config import load_or_create_config
 from fb_group_downloader.db import Database
 from fb_group_downloader.scheduler.runner import SchedulerDaemon
@@ -131,6 +132,32 @@ def daemon(
 
     runner = SchedulerDaemon(cfg, db)
     asyncio.run(runner.start(run_immediately=not no_initial_run))
+
+
+@app.command()
+def cleanup(
+    config_path: Path | None = typer.Option(None, "--config", "-c", help="設定檔路徑"),
+    apply: bool = typer.Option(False, "--apply", help="實際刪除空的重複資料夾（預設僅列出）"),
+):
+    """找出因日期變動而重複的相簿/貼文資料夾；--apply 只會刪除空資料夾，含檔案者需人工處理"""
+    cfg = load_or_create_config(config_path)
+    root = cfg.storage_dir
+    result = find_duplicates(root)
+
+    if not result.empty and not result.manual:
+        console.print("[green]沒有發現重複資料夾。[/green]")
+        return
+
+    for d in result.empty:
+        console.print(f"{'[red]刪除' if apply else '[yellow][dry-run] 將刪除'}（空資料夾）[/]: {d}")
+    for d, n in result.manual:
+        console.print(f"[magenta][需人工處理][/magenta] 含 {n} 個檔案，不會自動刪除: {d}")
+
+    if not apply:
+        console.print("\n加上 [bold]--apply[/bold] 才會實際刪除空資料夾。建議先備份下載目錄。")
+        return
+    delete_empty_duplicates(root, result)
+    console.print(f"[green]已刪除 {len(result.empty)} 個空的重複資料夾。[/green]")
 
 
 @app.command()

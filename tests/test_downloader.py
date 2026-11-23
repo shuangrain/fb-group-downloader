@@ -190,3 +190,23 @@ def test_find_existing_dir_reuses_folder_across_date_change(tmp_path: Path):
     (d / "album_info.json").write_text(json.dumps({"album_id": "42"}))
     assert DownloadManager._find_existing_dir(root, "album_info.json", "album_id", "42") == d
     assert DownloadManager._find_existing_dir(root, "album_info.json", "album_id", "43") is None
+
+
+def test_cleanup_find_and_delete_duplicates(tmp_path: Path):
+    import json
+
+    from fb_group_downloader.cleanup import delete_empty_duplicates, find_duplicates
+
+    albums = tmp_path / "grp" / "albums"
+    for name, files in [("20260831 a", 2), ("20260914 a", 0), ("20260915 a", 1)]:
+        d = albums / name
+        d.mkdir(parents=True)
+        (d / "album_info.json").write_text(json.dumps({"album_id": "42"}))
+        for i in range(files):
+            (d / f"p{i}.jpg").write_bytes(b"x")
+    res = find_duplicates(tmp_path)
+    assert [d.name for d in res.empty] == ["20260914 a"]
+    assert [(d.name, n) for d, n in res.manual] == [("20260915 a", 1)]
+    delete_empty_duplicates(tmp_path, res)
+    assert not (albums / "20260914 a").exists()
+    assert (albums / "20260915 a").exists()
